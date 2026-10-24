@@ -262,6 +262,23 @@ class PixivMatcher extends BaseMatcher<ArtistPIDs[]> {
     return [new SubData(node.title, list, meta.body.frames), "ugoira/ugoira"];
   }
 
+  title(chapters: Chapter[]): string {
+    let pid: string | undefined;
+    // Use the selected works; an artwork page can also download the artist's other works.
+    for (const chapter of chapters) {
+      for (const imf of chapter.filteredQueue) {
+        const id = imf.node.href.match(/\/artworks\/(\d+)(?:[/?#]|$)/)?.[1];
+        if (!id || (pid && pid !== id)) return super.title(chapters);
+        pid = id;
+      }
+    }
+    if (!pid) return super.title(chapters);
+    const now = new Date();
+    const date = [now.getFullYear() % 100, now.getMonth() + 1, now.getDate()]
+      .map(value => value.toString().padStart(2, "0")).join("");
+    return `${date}_${pid}`;
+  }
+
   galleryMeta(): GalleryMeta {
     this.meta.title = `pixiv_${this.api.title()}_w${Object.keys(this.works).length}_p${this.pageCount}` || "UNTITLE";
     this.meta.tags = Object.entries(this.works).reduce<Record<string, string[]>>((tags, work) => {
