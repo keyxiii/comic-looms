@@ -98,12 +98,15 @@ export function initEvents(HTML: Elements, BIFM: BigImageFrameManager, FVGM: Ful
         downloadThreads: [1, 10],
         timeout: [2, 40],
         autoPageSpeed: [1, 100],
+        autoScrollSpeed: [10, 300],
+        autoScrollPreloadScreens: [1, 10],
         preventScrollPageTime: [-1, 90000],
         paginationIMGCount: [1, 10],
         scrollingDelta: [1, 5000],
         scrollingSpeed: [1, 100],
       };
       let mod = 1;
+      if (key === "autoScrollSpeed") mod = 5;
       if (key === "preventScrollPageTime" || key === "rowHeight" || key === "scrollingDelta") {
         mod = ADAPTER.conf[key] < 1 ? 1 : ADAPTER.conf[key] === 1 ? 9 : 10;
       };
@@ -114,6 +117,11 @@ export function initEvents(HTML: Elements, BIFM: BigImageFrameManager, FVGM: Ful
       }
     }
     if (value === undefined) return;
+    if (key === "autoScrollSpeed" || key === "autoScrollPreloadScreens") {
+      if (!Number.isFinite(value)) return;
+      const [min, max] = key === "autoScrollSpeed" ? [10, 300] : [1, 10];
+      value = Math.min(max, Math.max(min, Math.round(value)));
+    }
     ADAPTER.conf[key] = value;
     const inputElement = q<HTMLInputElement>(`#${key}Input`, HTML.config.panel);
     inputElement.value = ADAPTER.conf[key].toString();
@@ -160,10 +168,7 @@ export function initEvents(HTML: Elements, BIFM: BigImageFrameManager, FVGM: Ful
 
     BIFM.changeLayout();
 
-    ADAPTER.conf.autoPageSpeed = ADAPTER.conf.readMode === "pagination" ? 5 : 1;
-    saveConf({ readMode: ADAPTER.conf.readMode, autoPageSpeed: ADAPTER.conf.autoPageSpeed }, siteName ?? ADAPTER.conf.selectedSiteNameConfig);
-
-    q<HTMLInputElement>("#autoPageSpeedInput", HTML.config.panel).value = ADAPTER.conf.autoPageSpeed.toString();
+    saveConf({ readMode: ADAPTER.conf.readMode }, siteName ?? ADAPTER.conf.selectedSiteNameConfig);
     Array.from(HTML.readModeSelect.querySelectorAll(".b-main-option")).forEach((element) => {
       if (element.getAttribute("data-value") === ADAPTER.conf.readMode) {
         element.classList.add("b-main-option-selected");

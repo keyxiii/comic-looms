@@ -25,6 +25,12 @@ export class IdleLoader {
     this.minWaitMS = 300;
     this.autoLoad = ADAPTER.conf.autoLoad;
     this.debouncer = new Debouncer();
+    EBUS.subscribe("continuous-preload", chapterIndex => {
+      if (chapterIndex === this.queue.chapterIndex && this.processingIndexList.length) this.abort();
+    });
+    EBUS.subscribe("continuous-preload-stop", () => {
+      if (!this.queue.downloading?.()) this.abort(this.queue.currIndex);
+    });
     EBUS.subscribe("ifq-on-do", (currIndex, _, downloading) => !downloading && this.abort(currIndex));
     EBUS.subscribe("imf-on-finished", (index, _success, imf) => {
       if (imf.chapterIndex !== this.queue.chapterIndex) return;
@@ -59,6 +65,7 @@ export class IdleLoader {
   }
 
   start() {
+    if (this.queue.readingPreloadActive) return;
     if (!this.autoLoad) return;
     // FIXME: document.hidden abort idle loader, if downloading, after refocus, it will not resume
     if (document.hidden && !ADAPTER.conf.autoLoadInBackground) return;
@@ -113,6 +120,7 @@ export class IdleLoader {
       // check if we are downloading
       // In case we change to a Big image, and click Download button before conf.restartIdleLoader seconds
       if (this.queue.downloading?.()) return;
+      if (this.queue.readingPreloadActive) return;
       const idleThreads = ADAPTER.conf.maxIdleThreads;
       this.processingIndexList = [];
       for (let i = 0; i < idleThreads; i++) {

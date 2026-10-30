@@ -66,6 +66,13 @@ export class ConfigPanel {
     ConfigItems.forEach(item => {
       switch (item.typ) {
         case "number":
+          if (item.key === "autoScrollSpeed" || item.key === "autoScrollPreloadScreens") {
+            const input = q<HTMLInputElement>(`#${item.key}Input`, this.panel);
+            input.addEventListener("change", () => {
+              events.modNumberConfigEvent(item.key as ConfigNumberType, undefined, input.value === "" ? NaN : Number(input.value));
+              input.value = ADAPTER.conf[item.key as ConfigNumberType].toString();
+            });
+          }
           q(`#${item.key}MinusBTN`, this.panel).addEventListener("click", () => events.modNumberConfigEvent(item.key as ConfigNumberType, 'minus'));
           q(`#${item.key}AddBTN`, this.panel).addEventListener("click", () => events.modNumberConfigEvent(item.key as ConfigNumberType, 'add'));
           q(`#${item.key}Input`, this.panel).addEventListener("wheel", (event: WheelEvent) => {
@@ -149,9 +156,11 @@ function createOption(item: ConfigItem) {
       input = `<input id="${item.key}Checkbox" ${conf[item.key as ConfigBooleanType] ? "checked" : ""} type="checkbox" />`;
       break;
     case "number":
+      const limits = item.key === "autoScrollSpeed" ? 'type="number" min="10" max="300" step="5"'
+        : item.key === "autoScrollPreloadScreens" ? 'type="number" min="1" max="10" step="1"' : 'disabled type="text"';
       input = `<span>
                   <button id="${item.key}MinusBTN" class="p-btn" type="button">-</button>
-                  <input id="${item.key}Input" value="${conf[item.key as ConfigNumberType]}" disabled type="text" />
+                  <input id="${item.key}Input" value="${conf[item.key as ConfigNumberType]}" ${limits} />
                   <button id="${item.key}AddBTN" class="p-btn" type="button">+</button></span>`;
       break;
     case "select":

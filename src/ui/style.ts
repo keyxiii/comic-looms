@@ -1054,6 +1054,7 @@ export function styleCSS() {
   color: green;
   background-color: #aaa;
 }
+#auto-page-btn[data-status="waiting"] { color: #ffc005; }
 #auto-page-progress {
   height: 100%;
   width: 0%;

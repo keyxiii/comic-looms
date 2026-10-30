@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Continuous reader regression</title>
+<style>
+  body { margin: 0; background: #181923; color: white; font: 15px sans-serif; }
+  #fixture-controls { position: fixed; right: 12px; top: 12px; z-index: 10000; background: #242538ee; padding: 12px; border-radius: 6px; }
+  #fixture-controls button { margin: 4px; padding: 6px; }
+  #fixture-status { white-space: pre; font: 13px monospace; margin-top: 8px; }
+</style>
+<div id="fixture-controls">
+  <button id="release">Release missing second image</button>
+  <button id="settings">Settings</button>
+  <button id="restart">Restart</button>
+  <div id="fixture-status">Loading fixture…</div>
+</div>
+<script>
+  window.GM = { xmlHttpRequest() { throw new Error('Unexpected network request'); } };
+  const storage = new Map();
+  window.GM_getValue = key => storage.get(key);
+  window.GM_setValue = (key, value) => storage.set(key, value);
+</script>
+<script type="module">
+  import { defaultConf } from '../src/config.ts';
+  import { ADAPTER } from '../src/platform/adapt.ts';
+  import { IMGFetcherQueue } from '../src/fetcher-queue.ts';
+  import { IMGFetcher, FetchState } from '../src/img-fetcher.ts';
+  import ImageNode from '../src/img-node.ts';
+  import { BigImageFrameManager } from '../src/ui/big-image-frame-manager.ts';
+  import { createHTML } from '../src/ui/html.ts';
+  import { initEvents } from '../src/ui/event.ts';
+  import { Filter } from '../src/filter.ts';
+  import EBUS from '../src/event-bus.ts';
+
+  ADAPTER.conf = { ...defaultConf(), readMode: 'continuous', autoLoad: false, autoScrollSpeed: 300,
+    debug: false, imgScale: 60, defaultImgScaleModeC: 60 };
+  ADAPTER.globalConf = ADAPTER.conf;
+  ADAPTER.matcher = { name: 'Local fixture' };
+  const html = createHTML(new Filter());
+  html.root.classList.remove('ehvp-root-collapse');
+  const queue = IMGFetcherQueue.newQueue();
+  const chapter = { filteredQueue: queue, done: true };
+  const started = [];
+  let release, active = 0, peak = 0;
+  const sources = [];
+  const missing = new Promise(resolve => { release = resolve; });
+  const count = Math.min(2000, Math.max(8, Number(new URLSearchParams(location.search).get('pages')) || 16));
+  for (let index = 0; index < count; index++) {
+    let src = sources[index % 16];
+    if (!src) {
+      const canvas = document.createElement('canvas'); canvas.width = 800; canvas.height = 1000;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = `hsl(${index * 43 % 360} 35% 28%)`; ctx.fillRect(0, 0, 800, 1000);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 50px sans-serif'; ctx.fillText(`Page ${index + 1}`, 65, 120);
+      for (let line = 0; line < 10; line++) {
+        ctx.font = '28px sans-serif'; ctx.fillText(`Reading line ${line + 1} — smooth scroll`, 65, 240 + line * 65);
+      }
+      src = canvas.toDataURL('image/png');
+      sources.push(src);
+    }
+    const node = new ImageNode(src, `https://example.test/${index}.png`, `page-${index + 1}.png`, undefined, src, { w: 800, h: 1000 });
+    const imf = new IMGFetcher(index, node, {}, 0, 0);
+    imf.create(); imf.contentType = 'image/png';
+    if (index === 0) { imf.stage = FetchState.DONE; node.blobSrc = src; }
+    imf.start = async function() {
+      if (this.lock || this.stage === FetchState.DONE) return;
+      this.lock = true; active++; peak = Math.max(peak, active); started.push(index);
+      if (index === 1) await missing;
+      else await new Promise(resolve => setTimeout(resolve, 150));
+      node.blobSrc = src; this.stage = FetchState.DONE;
+      EBUS.emit('imf-on-finished', index, true, this);
+      this.lock = false; active--;
+    };
+    queue.push(imf);
+  }
+  const bifm = new BigImageFrameManager(html, () => chapter);
+  const events = initEvents(html, bifm, {}, queue, {}, {});
+  html.config.initEvents(events);
+  bifm.append([...queue]);
+  for (const element of [html.autoPageBTN, html.configPanelBTN, html.readModeSelect.parentElement]) element.hidden = false;
+  html.configPanelBTN.onclick = () => html.config.panel.classList.toggle('p-collapse');
+  html.config.panel.style.zIndex = '10001';
+  html.config.panel.style.top = '12px'; html.config.panel.style.left = '12px';
+  document.querySelector('#settings').onclick = html.configPanelBTN.onclick;
+  document.querySelector('#restart').onclick = () => location.reload();
+  document.querySelector('#release').onclick = () => release();
+  bifm.show(queue[0]);
+  window.fixture = { bifm, html, queue, events, started, release,
+    snapshot: () => ({ position: bifm.root.scrollTop, status: html.autoPageBTN.dataset.status,
+      started: [...started], active, peak, speed: ADAPTER.conf.autoScrollSpeed,
+      screens: ADAPTER.conf.autoScrollPreloadScreens, current: bifm.currentIndex,
+      gapTop: bifm.container.children[2].offsetTop, height: bifm.root.clientHeight }),
+  };
+  setInterval(() => { document.querySelector('#fixture-status').textContent = JSON.stringify(window.fixture.snapshot(), null, 2); }, 100);
+</script>
+</html>

@@ -18,6 +18,8 @@ import { SubData } from "../platform/platform";
 import { AnimationControl } from "./animation-control";
 import { AppEventIDInAnimation } from "./event";
 import { MediaKind } from "../utils/media-action";
+import { ContinuousScroller, ContinuousScrollSnapshot, ContinuousScrollState } from "../utils/continuous-scroller";
+import { i18n } from "../utils/i18n";
 
 type MediaElement = HTMLImageElement | HTMLVideoElement | HTMLUgoiraElement;
 type ViewportAxis = "x" | "y";
@@ -53,6 +55,7 @@ export class BigImageFrameManager {
   pageNumInChapter: number[] = [];
   oriented: Oriented = "next";
   lastViewportSyncAt: number = 0;
+  private autoPage: AutoPage;
   // When bifm opens an image, the IntersectionObserver will immediately start detecting and rendering after 50 milliseconds, 
   // but we want to only start rendering when the corresponding image index is detected.
   intersectingIndexLock: boolean = false;
@@ -125,7 +128,7 @@ export class BigImageFrameManager {
       this.debouncer.addEvent("FLUSH-LOADING-HELPER", () => this.flushLoadingHelper(), 20);
     });
     // enable auto page
-    new AutoPage(this, HTML.autoPageBTN);
+    this.autoPage = new AutoPage(this, HTML.autoPageBTN);
   }
 
   onResize(imf: IMGFetcher) {
@@ -137,7 +140,7 @@ export class BigImageFrameManager {
       const currScrollTop = this.root.scrollTop;
       element.style.aspectRatio = imf.ratio().toString();
       if (currOffsetTop !== current.offsetTop) {
-        this.root.scrollTop = current.offsetTop + (currOffsetTop - currScrollTop);
+        this.root.scrollTop = currScrollTop + current.offsetTop - currOffsetTop;
       }
     } else {
       const currOffsetLeft = current.offsetLeft;
@@ -355,6 +358,71 @@ export class BigImageFrameManager {
     this.scrollerX.stop();
   }
 
+  destroy() {
+    this.hidden();
+    this.autoPage.destroy();
+    this.observer.disconnect();
+  }
+
+  /** Measure only the nearby forward window; image bytes and display readiness
+   * are separate so an undecoded image cannot be scrolled past. */
+  prepareContinuousScroll(): Omit<ContinuousScrollSnapshot, "suspended"> {
+    const position = this.root.scrollTop;
+    const height = this.root.clientHeight;
+    const chapter = this.getChapter(this.chapterIndex);
+    const queue = chapter.filteredQueue;
+    const nodeAt = (index: number) => this.container.children.item(index + 1) as HTMLElement | null;
+    const first = nodeAt(0), last = nodeAt(queue.length - 1);
+    if (!queue.length || !first || !last || height <= 0) {
+      if (!chapter.done) EBUS.emit("pf-try-extend");
+      return { position, end: position, readyEnd: position, complete: !!chapter.done };
+    }
+    const end = Math.max(first.offsetTop, last.offsetTop + last.offsetHeight - height);
+    // Binary search the first visible placeholder, independent of current-page
+    // bookkeeping and without scanning an entire long chapter every frame.
+    let low = 0, high = queue.length - 1;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const node = nodeAt(mid)!;
+      if (node.offsetTop + node.offsetHeight <= position + 0.01) low = mid + 1;
+      else high = mid;
+    }
+    const start = low;
+    const horizon = position + height * (1 + ADAPTER.conf.autoScrollPreloadScreens);
+    let preloadEnd = start, visibleEnd = start, readyEnd = end;
+    let gap = false;
+    for (let index = start; index < queue.length; index++) {
+      const element = nodeAt(index);
+      if (!element || element.offsetTop >= horizon) break;
+      preloadEnd = index;
+      if (element.offsetTop < position + height - 0.01) visibleEnd = index;
+      if (gap || !ADAPTER.conf.autoScrollWaitForImages) continue;
+      const imf = queue[index];
+      let ready = imf.stage === FetchState.DONE;
+      // Decode only the visible area and the next screen, never the whole
+      // download window. Farther pages are checked when they approach.
+      if (ready && element.offsetTop <= position + height * 2) {
+        if (!element.firstElementChild) {
+          element.appendChild(this.newMediaNode(imf));
+          if (!this.renderingElements.includes(element)) this.renderingElements.push(element);
+        }
+        const media = element.firstElementChild;
+        if (media instanceof HTMLImageElement) ready = media.complete && media.naturalWidth > 0;
+        else if (media instanceof HTMLVideoElement) ready = media.readyState >= 2;
+      }
+      if (!ready) {
+        // A page touching the viewport edge is a foreground demand even when
+        // lookahead is disabled or a download selection excludes that page.
+        if (element.offsetTop <= position + height + 0.01) visibleEnd = Math.max(visibleEnd, index);
+        readyEnd = Math.max(position, element.offsetTop - height);
+        gap = true;
+      }
+    }
+    EBUS.emit("continuous-preload", this.chapterIndex, start, preloadEnd, visibleEnd);
+    if (!chapter.done && last.offsetTop + last.offsetHeight <= horizon) EBUS.emit("pf-try-extend");
+    return { position, end, readyEnd, complete: !!chapter.done && !gap };
+  }
+
   hidden(event?: MouseEvent) {
     if (event && event.target && (event.target as HTMLElement).tagName === "SPAN") return;
     this.visible = false;
@@ -424,6 +492,7 @@ export class BigImageFrameManager {
   }
 
   changeLayout() {
+    EBUS.emit("bifm-layout-change");
     this.detachMedia();
     this.resetScaleBigImages(true);
     switch (ADAPTER.conf.readMode) {
@@ -539,6 +608,21 @@ export class BigImageFrameManager {
     const rootRect = this.root.getBoundingClientRect();
     const axis = this.viewportAxis();
     const root = viewportPosition(rootRect, axis);
+    if (axis === "y") {
+      let low = 0, high = this.container.children.length - 1;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        const element = this.container.children[mid] as HTMLElement;
+        if (element.getBoundingClientRect().bottom < root.center) low = mid + 1;
+        else high = mid;
+      }
+      const element = this.container.children[low] as HTMLElement | undefined;
+      if (element && parseIndex(element) >= 0) {
+        const imf = this.getIMF(element);
+        if (imf) { this.setCurrentFromElement(element, imf); return true; }
+      }
+      return false;
+    }
     let nearest: { element: HTMLElement, distance: number } | undefined;
 
     for (const element of Array.from(this.container.children) as HTMLElement[]) {
@@ -607,11 +691,11 @@ export class BigImageFrameManager {
           this.container.children.item(1) as HTMLElement,
           this.container.children.item(this.container.children.length - 2) as HTMLElement,
         ];
-        let offsetTop = first.offsetTop ?? 0;
+        let offsetTop = first?.offsetTop ?? 0;
         if (this.root.scrollTop < offsetTop - 3) {
           this.root.scrollTop = offsetTop - 2;
         } else {
-          offsetTop = last ? last.offsetTop + last.offsetHeight - this.root.offsetHeight : this.root.scrollHeight;
+          offsetTop = last ? Math.max(offsetTop, last.offsetTop + last.offsetHeight - this.root.clientHeight) : this.root.scrollHeight;
           if (this.root.scrollTop > offsetTop + 3) {
             this.root.scrollTop = offsetTop + 2;
           }
@@ -1097,23 +1181,60 @@ export class BigImageFrameManager {
 }
 
 // 自动翻页
-class AutoPage {
+export class AutoPage {
   bifm: BigImageFrameManager;
   status: 'stop' | 'running';
   button: HTMLElement;
   lockVer: number;
+  private continuous: ContinuousScroller;
+  private prepared?: Omit<ContinuousScrollSnapshot, "suspended">;
+  private preparedAt = -Infinity;
+  private cancelMediaWait?: () => void;
+  private onVisibility = () => { this.continuous.resetClock(); this.preparedAt = -Infinity; };
+  private onTouch = () => {
+    if (ADAPTER.conf.readMode === "continuous" && ADAPTER.conf.autoScrollPauseOnInput) this.stop();
+  };
+  private onClick = () => this.status === "stop" ? void this.start(this.lockVer) : this.stop();
   constructor(BIFM: BigImageFrameManager, button: HTMLElement) {
     this.bifm = BIFM;
     this.status = "stop";
     this.button = button;
     this.lockVer = 0;
+    this.continuous = new ContinuousScroller({
+      speed: () => ADAPTER.conf.autoScrollSpeed,
+      snapshot: () => {
+        const suspended = document.hidden && ADAPTER.conf.autoScrollPauseInBackground;
+        const now = performance.now();
+        if (!this.prepared || (!suspended && now - this.preparedAt >= 100)) {
+          this.prepared = this.bifm.prepareContinuousScroll();
+          this.preparedAt = now;
+        }
+        return { ...this.prepared, position: this.bifm.root.scrollTop, suspended };
+      },
+      moveTo: position => {
+        this.bifm.oriented = "next";
+        this.bifm.root.scrollTop = position;
+      },
+      onState: state => this.onContinuousState(state),
+      requestFrame: cb => window.requestAnimationFrame(cb),
+      cancelFrame: id => window.cancelAnimationFrame(id),
+    });
     this.bifm.callbackOnWheel = () => {
       if (this.status === "running") {
+        if (ADAPTER.conf.readMode === "continuous") {
+          if (ADAPTER.conf.autoScrollPauseOnInput) this.stop();
+          return;
+        }
         this.stop();
         this.start(this.lockVer);
       }
     };
     EBUS.subscribe("bifm-on-hidden", () => this.stop());
+    EBUS.subscribe("bifm-layout-change", () => this.stop());
+    EBUS.subscribe("pf-change-chapter", () => this.stop());
+    EBUS.subscribe("imf-on-finished", () => { this.preparedAt = -Infinity; });
+    EBUS.subscribe("imf-resize", () => { this.preparedAt = -Infinity; });
+    EBUS.subscribe("pf-on-appended", () => { this.preparedAt = -Infinity; });
     EBUS.subscribe("bifm-on-show", () => ADAPTER.conf.autoPlay && this.start(this.lockVer));
     EBUS.subscribe("toggle-auto-play", () => {
       if (this.status === "stop") {
@@ -1122,30 +1243,55 @@ class AutoPage {
         this.stop();
       }
     });
+    document.addEventListener("visibilitychange", this.onVisibility);
+    this.bifm.root.addEventListener("touchstart", this.onTouch, { passive: true });
     this.initPlayButton();
   }
 
   initPlayButton() {
-    this.button.addEventListener("click", () => {
-      if (this.status === "stop") {
-        this.start(this.lockVer);
-      } else {
-        this.stop();
-      }
-    });
+    this.button.addEventListener("click", this.onClick);
+  }
+
+  private onContinuousState(state: ContinuousScrollState) {
+    if (state === "stopped") {
+      if (this.status === "running") this.stop();
+      return;
+    }
+    this.button.setAttribute("data-status", state === "running" ? "playing" : state);
+    this.button.title = state === "waiting" ? i18n.autoScrollWaiting.get()
+      : state === "suspended" ? i18n.autoScrollSuspended.get() : i18n.autoScrollRunning.get();
+    const texts = this.button.getAttribute("data-display-texts")!.split(",");
+    this.button.firstElementChild!.textContent = state === "waiting" ? i18n.autoScrollBuffering.get() : texts[1];
+  }
+
+  destroy() {
+    this.stop();
+    document.removeEventListener("visibilitychange", this.onVisibility);
+    this.bifm.root.removeEventListener("touchstart", this.onTouch);
+    this.button.removeEventListener("click", this.onClick);
   }
 
   async start(lockVer: number) {
+    if (this.status === "running" || lockVer !== this.lockVer) return;
     this.status = "running";
     this.button.setAttribute("data-status", "playing");
     const displayTexts = this.button.getAttribute("data-display-texts")!.split(",");
-    (this.button.firstElementChild as HTMLSpanElement).innerText = displayTexts[1];
+    this.button.firstElementChild!.textContent = displayTexts[1];
     if (!this.bifm.visible) {
       const queue = this.bifm.getChapter(this.bifm.chapterIndex).filteredQueue;
-      if (queue.length === 0) return;
+      if (queue.length === 0) { this.stop(); return; }
       this.bifm.show(queue[this.bifm.currentIndex]);
     }
     const progress = q("#auto-page-progress", this.button);
+    if (ADAPTER.conf.readMode === "continuous") {
+      this.bifm.scrollStop();
+      this.bifm.oriented = "next";
+      this.prepared = this.bifm.prepareContinuousScroll();
+      this.preparedAt = performance.now();
+      progress.style.animation = "";
+      this.continuous.start();
+      return;
+    }
     const interval = () => ADAPTER.conf.readMode === "pagination" ? ADAPTER.conf.autoPageSpeed : 1;
     while (true) {
       await sleep(10); // need to wait 10ms for animation style changed
@@ -1168,14 +1314,21 @@ class AutoPage {
       if (ADAPTER.conf.readMode === "pagination") {
         const curr = this.bifm.container.querySelector<HTMLElement>(`div[d-index="${this.bifm.currentIndex}"]`)?.firstElementChild;
         if (curr instanceof HTMLVideoElement) {
-          let resolve: () => void;
-          const promise = new Promise<void>(r => resolve = r);
-          curr.addEventListener("timeupdate", () => {
-            if (curr.currentTime >= curr.duration - 1) sleep(1000).then(resolve);
+          await new Promise<void>(resolve => {
+            const finish = () => {
+              curr.removeEventListener("timeupdate", onTime);
+              this.cancelMediaWait = undefined;
+              resolve();
+            };
+            const onTime = () => {
+              if (curr.currentTime >= curr.duration - 1) finish();
+            };
+            this.cancelMediaWait = finish;
+            curr.addEventListener("timeupdate", onTime);
           });
-          await promise;
         }
       }
+      if (this.lockVer !== lockVer || this.status !== "running") return;
       const deltaY = this.bifm.root.offsetHeight / 2;
       this.bifm.onWheel(new WheelEvent("wheel", { deltaY: deltaY }), true, true, true);
     }
@@ -1183,13 +1336,19 @@ class AutoPage {
   }
 
   stop() {
+    const wasRunning = this.status === "running";
     this.status = "stop";
+    this.continuous.stop();
+    this.cancelMediaWait?.();
+    this.prepared = undefined;
+    if (wasRunning) EBUS.emit("continuous-preload-stop");
     this.button.setAttribute("data-status", "paused");
+    this.button.title = i18n.autoScrollStopped.get();
     const progress = q("#auto-page-progress", this.button);
     progress.style.animation = ``;
     this.lockVer += 1;
     const displayTexts = this.button.getAttribute("data-display-texts")!.split(",");
-    (this.button.firstElementChild as HTMLSpanElement).innerText = displayTexts[0];
+    this.button.firstElementChild!.textContent = displayTexts[0];
     this.bifm.scrollStop();
   }
 }

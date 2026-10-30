@@ -175,11 +175,39 @@ const i18nData = {
     'Velocidad de paginación automática'
   ],
   autoPageSpeedTooltip: [
-    'In Pagination read mode, Auto Page Speed means how many seconds it takes to flip the page automatically.<br>In Continuous read mode, Auto Page Speed means the scrolling speed.',
-    '当阅读模式为翻页模式时，自动翻页速度表示为多少秒后翻页。<br>当阅读模式为连续模式时，自动翻页速度表示为滚动速度。',
-    '페이지 넘김 모드에서 자동 페이지 넘김 속도는 몇 초 후에 자동으로 페이지가 넘어갈지를 의미합니다.<br>연속 읽기 모드에서 자동 페이지 넘김 속도는 자동 스크롤 속도를 의미합니다.',
-    'En el modo de lectura por paginación, la velocidad de página automática indica cuántos segundos toma cambiar la página automáticamente.<br>En el modo de lectura continua, la velocidad de página automática indica la velocidad de desplazamiento.'
+    'Seconds between automatic turns in Pagination mode. Continuous mode uses Auto Scroll Speed.',
+    '翻页模式下每次自动翻页的间隔，单位：秒。滚动模式请使用“自动滚动速度”。',
+    '페이지 모드의 자동 넘김 간격(초)입니다. 연속 모드에서는 자동 스크롤 속도를 사용합니다.',
+    'Segundos entre páginas en modo Paginación. El modo Continuo usa Velocidad de desplazamiento automático.'
   ],
+  autoScrollSpeed: ['Auto Scroll Speed (px/s)', '自动滚动速度（像素/秒）', '자동 스크롤 속도(px/초)', 'Velocidad automática (px/s)'],
+  autoScrollSpeedTooltip: [
+    'Continuous mode only. 10–300 CSS pixels per second; changes apply immediately.',
+    '仅用于滚动阅读模式，范围 10–300 像素/秒，修改后即时生效。',
+    '연속 모드 전용. 초당 10–300 CSS 픽셀, 변경 즉시 적용됩니다.',
+    'Solo modo Continuo. 10–300 píxeles CSS por segundo; los cambios se aplican al instante.'
+  ],
+  autoScrollPreloadScreens: ['Preload Ahead (screens)', '向前预加载范围（屏）', '앞으로 미리 읽기(화면)', 'Precarga hacia delante (pantallas)'],
+  autoScrollPreloadScreensTooltip: [
+    'Preload 1–10 viewport heights ahead while auto-scrolling, within the existing preload page limit. Browsing Threads controls concurrency; 0 disables lookahead while still loading images needed for reading.',
+    '自动滚动时向前预加载 1–10 屏，同时受“最大预加载距离”的页数上限约束。复用浏览加载线程数；线程数为 0 时关闭前方预加载，仍按需加载阅读中的图片。',
+    '자동 스크롤 중 1–10 화면을 미리 읽습니다. 기존 페이지 제한과 로드 수를 따르며, 로드 수 0은 보이는 이미지만 로드합니다.',
+    'Precarga 1–10 pantallas al desplazarse. Respeta el límite de páginas y los hilos de lectura; 0 carga solo imágenes visibles.'
+  ],
+  autoScrollWaitForImages: ['Wait for Missing Images', '缺图时暂停并自动恢复', '이미지를 기다린 뒤 자동 재개', 'Esperar imágenes y reanudar'],
+  autoScrollWaitForImagesTooltip: [
+    'Pause before an unloaded image enters the viewport, then resume when it is ready. Failed images require retrying or manual navigation.',
+    '尚未就绪的图片即将进入视口时暂停，加载就绪后自动恢复。加载失败的图片需重试或手动跳过。',
+    '이미지가 준비될 때까지 기다렸다가 재개합니다. 실패한 이미지는 재시도하거나 수동으로 건너뛰세요.',
+    'Espera hasta que la imagen esté lista. Las imágenes fallidas requieren reintento o navegación manual.'
+  ],
+  autoScrollPauseOnInput: ['Pause Auto Scroll on Manual Input', '手动滚动时暂停自动滚动', '직접 조작 시 자동 스크롤 일시정지', 'Pausar al desplazar manualmente'],
+  autoScrollPauseInBackground: ['Pause Auto Scroll in Background', '切到后台时暂停自动滚动', '백그라운드에서 자동 스크롤 일시정지', 'Pausar desplazamiento en segundo plano'],
+  autoScrollWaiting: ['Waiting for images… Click to stop.', '等待图片加载…点击可停止', '이미지 대기 중…클릭하여 중지', 'Esperando imágenes… Pulsa para detener.'],
+  autoScrollBuffering: ['WAIT', '等待图片', '이미지 대기', 'ESPERAR'],
+  autoScrollSuspended: ['Auto scroll paused in background', '自动滚动已在后台暂停', '백그라운드에서 스크롤 일시정지', 'Desplazamiento pausado en segundo plano'],
+  autoScrollRunning: ['Auto-scrolling… Click to pause.', '正在自动滚动…点击可暂停', '자동 스크롤 중…클릭하여 일시정지', 'Desplazando… Pulsa para pausar.'],
+  autoScrollStopped: ['Auto scroll paused. Click to start.', '自动滚动已暂停，点击开始', '스크롤 일시정지. 클릭하여 시작', 'Desplazamiento pausado. Pulsa para iniciar.'],
   scrollingDelta: [
     'Scrolling Delta',
     '滚动距离',

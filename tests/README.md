@@ -1,5 +1,32 @@
 # Media controls and X list discovery
 
+## Continuous automatic reading
+
+Run `node --import ./tests/register.mjs --test tests/continuous-scroll.test.mjs tests/continuous-reader.test.mjs`.
+The tests cover elapsed-time scrolling at 60/120/144 Hz, subpixel accumulation,
+live speed changes, buffering and automatic recovery, manual cancellation,
+background clock resets, finite and appended lists, image-size anchors,
+concurrency, request reuse, selection/page limits, foreground-only loading,
+download ownership, stale chapter completions, settings migration and controls.
+
+With Vite running, open `/tests/continuous-reader.html`. This uses the production
+reader, queue and settings panel with generated local images and simulated loads.
+Click Play: the reader must stop before the second image enters the viewport and
+show a waiting label. Later images may preload but must not let it skip the gap.
+Click **Release missing second image**: scrolling resumes automatically. Change
+speed and lookahead in Settings, then verify manual wheel/touch/key scrolling
+pauses, waiting is cancellable, and mode/chapter changes stop the old loop.
+Check foreground/background behavior with the background loading switch both ways.
+Use `?pages=2000` for long-chapter checks and jump near the last page to check the
+terminal stop. Browser automation verified waiting/recovery, configuration,
+manual pause, concurrency, 120/300 px/s motion and the end on the 2000-page fixture;
+this does not establish live-site/userscript-manager compatibility.
+
+Defaults: 60 CSS px/s (10–300) and four screens ahead (1–10). Wait for images,
+pause on manual input, and pause in background are enabled. Pagination seconds
+remain independent. Failed images wait for explicit retry or manual navigation;
+foreground demand can load a selected-out page without changing download rules.
+
 ## Download pattern selection
 
 Run `node --import ./tests/register.mjs --test tests/cherry-pick.test.mjs tests/download-selection.test.mjs`.

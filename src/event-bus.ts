@@ -40,6 +40,9 @@ export interface Events {
   "downloader-canvas-on-click": (index: number) => void;
   "bifm-on-show": () => void;
   "bifm-on-hidden": () => void;
+  "bifm-layout-change": () => void;
+  "continuous-preload": (chapterIndex: number, start: number, end: number, visibleEnd: number) => void;
+  "continuous-preload-stop": () => void;
   "bifm-rotate-image": () => void;
   "pf-on-appended": (total: number, nodes: IMGFetcher[], chapterIndex: number, done?: boolean) => void;
   "pf-update-chapters": (chapters: Chapter[], slient?: boolean) => void;

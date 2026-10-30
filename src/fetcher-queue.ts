@@ -25,8 +25,15 @@ export class IMGFetcherQueue extends Array<IMGFetcher> {
   dataSize: number = 0;
   chapterIndex: number = 0;
   cherryPick?: (chapterIndex: number) => CherryPick;
+  private readingWindow?: { start: number, end: number, visibleEnd: number };
+  private readingTasks = new Set<IMGFetcher>();
+  private loadGeneration = 0;
+
+  get readingPreloadActive() { return this.readingWindow !== undefined; }
 
   clear() {
+    this.readingWindow = undefined;
+    this.loadGeneration++;
     this.length = 0;
     this.executableQueue = [];
     this.currIndex = 0;
@@ -48,6 +55,17 @@ export class IMGFetcherQueue extends Array<IMGFetcher> {
       if (imf.chapterIndex !== queue.chapterIndex) return;
       queue.do(index, oriented);
     });
+    EBUS.subscribe("continuous-preload", (chapterIndex, start, end, visibleEnd) => {
+      if (chapterIndex !== queue.chapterIndex) return;
+      if (!queue.readingPreloadActive) {
+        queue.loadGeneration++;
+        window.clearTimeout(queue.debouncer.tids["IFQ-EXECUTABLE"]);
+      }
+      queue.readingWindow = { start, end, visibleEnd };
+      queue.pumpReadingPreload();
+    });
+    EBUS.subscribe("continuous-preload-stop", () => { queue.readingWindow = undefined; });
+    EBUS.subscribe("pf-change-chapter", () => { queue.readingWindow = undefined; });
     EBUS.subscribe("pf-change-chapter", () => queue.forEach(imf => imf.unrender()));
     EBUS.subscribe("add-cherry-pick-range", (chIndex, index, positive, _shiftKey) => {
       if (chIndex !== queue.chapterIndex) return;
@@ -88,11 +106,12 @@ export class IMGFetcherQueue extends Array<IMGFetcher> {
    *  puts them into `this.executableQueue`, and then calls `IMGFetcher.start()` for all of them.
    */
   do(start: number, oriented?: Oriented) {
+    const generation = this.loadGeneration;
     oriented = oriented || "next";
     // check bounds
     this.currIndex = this.fixIndex(start);
     EBUS.emit("ifq-on-do", this.currIndex, this, this.downloading?.() || false);
-    if (this.downloading?.()) return;
+    if (this.downloading?.() || this.readingPreloadActive) return;
 
     // Starting from the this.currIndex, add the specified number of `IMGFetcher` instances to the queue.  
     // If an `IMGFetcher` is already completed, extend the search further.  
@@ -103,10 +122,12 @@ export class IMGFetcherQueue extends Array<IMGFetcher> {
     // Delay 300ms to avoid too many requests.  
     // If the user scrolls quickly through large images, it could otherwise trigger excessive requests.
     this.debouncer.addEvent("IFQ-EXECUTABLE", () => {
+      if (generation !== this.loadGeneration || this.downloading?.() || this.readingPreloadActive) return;
       const executableQueue = [...this.executableQueue];
       console.log("IFQ-EXECUTABLE: ", executableQueue);
       Promise.all(executableQueue.splice(0, ADAPTER.conf.paginationIMGCount).map(imfIndex => this[imfIndex].start()))
         .then(() => {
+          if (generation !== this.loadGeneration || this.downloading?.() || this.readingPreloadActive) return;
           const picked = this.cherryPick?.(this.chapterIndex);
           executableQueue.filter(i => !picked || picked.picked(i)).forEach(imfIndex => this[imfIndex].start());
         });
@@ -118,6 +139,9 @@ export class IMGFetcherQueue extends Array<IMGFetcher> {
    * If the reported index matches the `currIndex` in the execution queue, update the displayed large image.
    */
   finishedReport(index: number, success: boolean, imf: IMGFetcher) {
+    // IMGFetcher emits before releasing its lock. Refill after that release,
+    // including when the finished request was started outside this scheduler.
+    queueMicrotask(() => this.pumpReadingPreload());
     // Changing chapter will clear this
     if (this.length === 0) return;
     // evLog("ifq finished report, index: ", index, ", success: ", success, ", current index: ", this.currIndex);
@@ -127,6 +151,33 @@ export class IMGFetcherQueue extends Array<IMGFetcher> {
       this.dataSize += imf.data?.byteLength || 0;
     }
     EBUS.emit("ifq-on-finished-report", index, this);
+  }
+
+  /** Foreground reading owns the available browsing slots until it is paused. */
+  private pumpReadingPreload() {
+    const range = this.readingWindow;
+    if (!range || this.downloading?.()) return;
+    if (document.hidden && !ADAPTER.conf.autoLoadInBackground) return;
+    const capacity = Math.max(1, ADAPTER.conf.threads);
+    let running = 0;
+    for (const imf of this) if (imf.lock || this.readingTasks.has(imf)) running++;
+    const pageLimit = ADAPTER.conf.maxPreloadDistance;
+    const forwardEnd = ADAPTER.conf.threads === 0 ? range.visibleEnd
+      : Math.min(range.end, pageLimit > 0 ? range.start + pageLimit : range.end);
+    const end = Math.min(this.length - 1, Math.max(range.visibleEnd, forwardEnd));
+    const picked = this.cherryPick?.(this.chapterIndex);
+    for (let index = range.start; index <= end && running < capacity; index++) {
+      const imf = this[index];
+      if (!imf || imf.lock || this.readingTasks.has(imf)) continue;
+      if (imf.stage === FetchState.DONE || imf.stage === FetchState.FAILED) continue;
+      if (index > range.visibleEnd && picked && !picked.picked(index)) continue;
+      this.readingTasks.add(imf);
+      running++;
+      void imf.start().finally(() => {
+        this.readingTasks.delete(imf);
+        this.pumpReadingPreload();
+      });
+    }
   }
 
   fixIndex(start: number) {

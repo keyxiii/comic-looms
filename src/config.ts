@@ -65,6 +65,13 @@ export type Config = {
   defaultImgScaleModeC: number
   /** 自动翻页间隔 */
   autoPageSpeed: number
+  /** Continuous automatic scrolling, in CSS pixels per second. */
+  autoScrollSpeed: number
+  /** Forward reading preload window, in viewport heights. */
+  autoScrollPreloadScreens: number
+  autoScrollWaitForImages: boolean
+  autoScrollPauseOnInput: boolean
+  autoScrollPauseInBackground: boolean
   /** 自动开始 */
   autoPlay: boolean
   /** 高清晰度的缩略图 */
@@ -168,7 +175,12 @@ export function defaultConf(): Config {
     pageHelperAbRight: "unset",
     imgScale: 100,
     defaultImgScaleModeC: 60,
-    autoPageSpeed: 5, // pagination readmode = 5, continuous readmode = 1
+    autoPageSpeed: 5, // Seconds between turns in pagination mode.
+    autoScrollSpeed: 60,
+    autoScrollPreloadScreens: 4,
+    autoScrollWaitForImages: true,
+    autoScrollPauseOnInput: true,
+    autoScrollPauseInBackground: true,
     autoPlay: false,
     hdThumbnails: false,
     filenameTemplate: "{number}-{title}",
@@ -295,6 +307,15 @@ function confHealthCheck(cf: Config): Config {
     cf.imgScale = cf.readMode === "continuous" ? cf.defaultImgScaleModeC : 100;
     changed = true;
   }
+  for (const [key, min, max] of [["autoScrollSpeed", 10, 300], ["autoScrollPreloadScreens", 1, 10]] as const) {
+    const value = cf[key];
+    const valid = typeof value === "number" && Number.isFinite(value)
+      ? Math.max(min, Math.min(max, Math.round(value))) : defa[key];
+    if (valid !== value) { cf[key] = valid; changed = true; }
+  }
+  for (const key of ["autoScrollWaitForImages", "autoScrollPauseOnInput", "autoScrollPauseInBackground"] as const) {
+    if (typeof cf[key] !== "boolean") { cf[key] = defa[key]; changed = true; }
+  }
   if (cf.imgNodeActions && !(cf.imgNodeActions instanceof Array)) {
     cf.imgNodeActions = [];
     changed = true;
@@ -373,6 +394,8 @@ export type ConfigNumberType = "colCount"
   | "downloadThreads"
   | "timeout"
   | "autoPageSpeed"
+  | "autoScrollSpeed"
+  | "autoScrollPreloadScreens"
   | "preventScrollPageTime"
   | "paginationIMGCount"
   | "scrollingDelta"
@@ -382,6 +405,9 @@ export type ConfigBooleanType = "fetchOriginal"
   | "autoLoad"
   | "reversePages"
   | "autoPlay"
+  | "autoScrollWaitForImages"
+  | "autoScrollPauseOnInput"
+  | "autoScrollPauseInBackground"
   | "autoCollapsePanel"
   | "autoOpen"
   | "autoLoadInBackground"
@@ -435,6 +461,11 @@ export const ConfigItems: ConfigItem[] = [
   { key: "timeout", typ: "number" },
   { key: "preventScrollPageTime", typ: "number" },
   { key: "autoPageSpeed", typ: "number" },
+  { key: "autoScrollSpeed", typ: "number" },
+  { key: "autoScrollPreloadScreens", typ: "number" },
+  { key: "autoScrollWaitForImages", typ: "boolean", gridColumnRange: [1, 11] },
+  { key: "autoScrollPauseOnInput", typ: "boolean", gridColumnRange: [1, 11] },
+  { key: "autoScrollPauseInBackground", typ: "boolean", gridColumnRange: [1, 11] },
   { key: "scrollingDelta", typ: "number" },
   { key: "scrollingSpeed", typ: "number" },
   { key: "fetchOriginal", typ: "boolean", gridColumnRange: [1, 6] },
