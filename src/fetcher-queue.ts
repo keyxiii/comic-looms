@@ -51,6 +51,7 @@ export class IMGFetcherQueue extends Array<IMGFetcher> {
     EBUS.subscribe("pf-change-chapter", () => queue.forEach(imf => imf.unrender()));
     EBUS.subscribe("add-cherry-pick-range", (chIndex, index, positive, _shiftKey) => {
       if (chIndex !== queue.chapterIndex) return;
+      if (queue.downloading?.()) return;
       if (positive) return;
       // TODO: range
       if (queue[index]?.stage === FetchState.DATA) {
@@ -70,7 +71,7 @@ export class IMGFetcherQueue extends Array<IMGFetcher> {
 
   isFinished(): boolean {
     const picked = this.cherryPick?.(this.chapterIndex);
-    if (picked && picked.values.length > 0) {
+    if (picked) {
       for (let index = 0; index < this.length; index++) {
         if (picked.picked(index) && !this.finishedIndex.has(index)) {
           return false;

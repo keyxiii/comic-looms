@@ -26,7 +26,8 @@ export class IdleLoader {
     this.autoLoad = ADAPTER.conf.autoLoad;
     this.debouncer = new Debouncer();
     EBUS.subscribe("ifq-on-do", (currIndex, _, downloading) => !downloading && this.abort(currIndex));
-    EBUS.subscribe("imf-on-finished", (index) => {
+    EBUS.subscribe("imf-on-finished", (index, _success, imf) => {
+      if (imf.chapterIndex !== this.queue.chapterIndex) return;
       // this.processingIndexList not include index mean curr task dont go continue, it aborted
       if (!this.processingIndexList.includes(index)) return;
       this.wait().then(() => {
@@ -43,6 +44,9 @@ export class IdleLoader {
         if (document.hidden) return;
         this.abort(0, 10);
       }, 100);
+    });
+    EBUS.subscribe("cherry-pick-changed", chapterIndex => {
+      if (chapterIndex === this.queue.chapterIndex && !this.queue.downloading?.()) this.abort(this.queue.currIndex, 100);
     });
     EBUS.subscribe("pf-on-appended", (_total, _nodes, _chapterIndex, done) => {
       if (done || this.processingIndexList.length > 0) return;
@@ -61,6 +65,7 @@ export class IdleLoader {
     // processingIndexList.length === 0 means idle loader aborted
     if (this.processingIndexList.length === 0) return;
     if (this.queue.length === 0) return;
+    this.checkProcessingIndex();
     evLog("info", "Idle Loader start at: " + this.processingIndexList.toString());
     for (const processingIndex of this.processingIndexList) {
       // start sereval img fetchers, when img fetcher is done, it will triggered event:imf-on-finished
@@ -69,56 +74,24 @@ export class IdleLoader {
   }
 
   checkProcessingIndex() {
-    if (this.queue.length === 0) {
-      return;
-    }
-    // Skip found Fetcher
     const picked = this.cherryPick?.() || new CherryPick();
-    const foundFetcherIndex = new Set<number>();
+    const capacity = this.processingIndexList.length;
+    const start = this.processingIndexList[0] ?? this.queue.currIndex ?? 0;
+    const next = this.processingIndexList.filter((index, position, list) =>
+      list.indexOf(index) === position && this.queue[index]?.lock && picked.picked(index));
     let hasFailed = false;
-    for (let i = 0; i < this.processingIndexList.length; i++) {
-      const processingIndex = this.processingIndexList[i];
-      const imf = this.queue[processingIndex];
-      if (imf.stage === FetchState.FAILED) {
-        hasFailed = true;
-      }
-      // img fetcher still fetching, or not yet fetching, continue.
-      if (imf.lock || imf.stage === FetchState.URL) {
-        continue;
-      }
-      // find unfinished imgFetcher
-      for (
-        let j = Math.min(processingIndex + 1, this.queue.length - 1), limit = this.queue.length;
-        (j < limit);
-        j++
-      ) {
-        if (picked.picked(j)) {
-          const imf = this.queue[j];
-          // find img fetcher that hasn't been fetching
-          if (!imf.lock && imf.stage === FetchState.URL && !foundFetcherIndex.has(j)) {
-            foundFetcherIndex.add(j);
-            this.processingIndexList[i] = j;
-            break;
-          }
-          if (imf.stage === FetchState.FAILED) {
-            hasFailed = true;
-          }
-        }
-        // begin from the frist, stop at the processingIndex
-        if (j >= this.queue.length - 1) {
-          limit = processingIndex;
-          j = 0;
-        }
-      }
-      // can not find any img fetcher that hasn't been fetching
-      if (foundFetcherIndex.size === 0) {
-        this.processingIndexList.length = 0;
-        if (hasFailed && this.onFailedCallback) {
-          this.onFailedCallback();
-          this.onFailedCallback = undefined;
-        }
-        return;
-      }
+    for (let offset = 0; offset < this.queue.length; offset++) {
+      const index = (start + offset) % this.queue.length;
+      if (!picked.picked(index)) continue;
+      const imf = this.queue[index];
+      if (imf.stage === FetchState.FAILED) hasFailed = true;
+      if (next.length >= capacity || imf.lock || next.includes(index)) continue;
+      if (imf.stage === FetchState.URL || imf.stage === FetchState.DATA) next.push(index);
+    }
+    this.processingIndexList = next;
+    if (next.length === 0 && hasFailed && this.onFailedCallback) {
+      this.onFailedCallback();
+      this.onFailedCallback = undefined;
     }
   }
 

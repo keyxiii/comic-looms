@@ -1,5 +1,37 @@
 # Media controls and X list discovery
 
+## Download pattern selection
+
+Run `node --import ./tests/register.mjs --test tests/cherry-pick.test.mjs tests/download-selection.test.mjs`.
+These tests cover expression validation, one-based numbering, appended pages,
+manual overrides, initial idle requests, bounded download workers, cancellation,
+empty source batches, metadata failures, chapter selection and panel drafts.
+The tests simulate image data and never download remote media.
+
+With Vite running, open `http://127.0.0.1:5173/tests/download-selection.html`.
+This uses the production panel, styles and download worker loop with simulated
+images. On 200 pages, apply `2n+1` and start: exactly 100 odd pages are requested.
+Append 20 pages: the preview becomes 110 / 220. Check all presets, invalid input,
+manual picks/exclusions, clearing, chapter switching and a 360-pixel viewport.
+The rules affect automatic image loading and batch downloads; explicitly opening
+an excluded image still loads it. Thumbnails/list metadata and previous requests
+are unaffected. Rules are per chapter for the current reader session, and editing
+the selection or switching chapters is blocked during batch downloads.
+
+The pre-existing `tests/media-logic.test.mjs` still imports the absent
+`src/ui/media-actions.ts`; this prevents that file from running in the full suite.
+Live site/userscript-manager compatibility remains a manual check.
+
+## Media regression
+
+Single-image context-menu tests: `node --import ./tests/register.mjs --test tests/single-image-download.test.mjs`.
+They verify the captured thumbnail/large-image target, unchanged image bytes,
+lazy fetching, in-flight reuse, duplicate suppression, filenames and failure feedback.
+GIF/WebP are saved directly; multi-frame archives are rejected rather than zipped.
+The browser fixture at `/tests/single-image-download.html` provides red and blue
+images in both thumbnail and large-image modes. Right-click the second image and
+download it: the result must be `second-blue.png`, a blue 160×120 PNG, with no ZIP.
+
 Run `npm ci`, `npm test`, and `npm run build` using Node.js 24.
 The Node tests use simulated media clocks, decoder responses and X responses.
 They do not require a browser, authentication or access to X. They cover parser

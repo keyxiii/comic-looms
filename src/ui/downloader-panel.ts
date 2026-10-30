@@ -1,4 +1,5 @@
-import { ChapterStat, CherryPickRange } from "../download/downloader";
+import type { ChapterStat } from "../download/downloader";
+import { CherryPick, CherryPickRange } from "../download/cherry-pick";
 import EBUS from "../event-bus";
 import { Chapter } from "../page-fetcher";
 import { i18n } from "../utils/i18n";
@@ -104,6 +105,9 @@ export class DownloaderPanel {
   }
 
   flushUI(stage: "downloadFailed" | "downloaded" | "downloading" | "downloadStart" | "packaging") {
+    const locked = stage === "downloading" || stage === "packaging";
+    this.cherryPickElement.setAttribute("aria-busy", String(locked));
+    this.cherryPickElement.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button").forEach(control => control.disabled = locked);
     this.startBTN.style.color = stage === "downloadFailed" ? "red" : "";
     this.startBTN.textContent = i18n[stage].get();
     this.btn.style.color = stage === "downloadFailed" ? "red" : "";
@@ -183,101 +187,173 @@ export class DownloaderPanel {
     return idSet;
   }
 
-  initCherryPick(onAdd: (chIndex: number, range: CherryPickRange) => CherryPickRange[] | null, onRemove: (chIndex: number, id: string) => void, onClear: (chIndex: number) => void, getRangeList: (chIndex: number) => CherryPickRange[] | null) {
-    let chapterIndex = 0; // chapterIndex will be changed on event bus: pf-change-chapter
-    function addRangeElements(container: HTMLElement, rangeList: CherryPickRange[], onRemove: (id: string) => void) {
-      container.querySelectorAll(".ehvp-custom-panel-item-value").forEach(e => e.remove());
-      const tamplate = document.createElement("div");
-      rangeList.forEach(range => {
-        const str = `<span class="ehvp-custom-panel-item-value" data-id="${range.id}"><span >${range.toString()}</span><span class="ehvp-custom-btn ehvp-custom-btn-plain" style="padding:0;border:none;">&nbspx&nbsp</span></span>`;
-        tamplate.innerHTML = str;
-        const element = tamplate.firstElementChild as HTMLElement;
-        element.style.backgroundColor = range.positive ? "#7fef7b" : "#ffa975";
-        container.appendChild(element);
-        element.querySelector(".ehvp-custom-btn")!.addEventListener("click", (event) => {
-          const parent = (event.target as HTMLElement).parentElement!;
-          onRemove(parent.getAttribute("data-id")!);
-          parent.remove();
-        });
-        tamplate.remove();
-      });
-    }
-    const pickBTN = q<HTMLButtonElement>("#download-cherry-pick-btn-add", this.cherryPickElement);
-    const excludeBTN = q<HTMLButtonElement>("#download-cherry-pick-btn-exclude", this.cherryPickElement);
-    const clearBTN = q<HTMLButtonElement>("#download-cherry-pick-btn-clear", this.cherryPickElement);
-    const rangeBeforeSpan = q<HTMLButtonElement>("#download-cherry-pick-btn-range-before", this.cherryPickElement);
-    const rangeAfterSpan = q<HTMLButtonElement>("#download-cherry-pick-btn-range-after", this.cherryPickElement);
+  initCherryPick(getPick: (chapterIndex: number) => CherryPick, onChange: (chapterIndex: number) => void, downloading: () => boolean) {
+    let chapterIndex = 0;
+    let draft = false;
+    const totals = new Map<number, { total: number, done: boolean }>();
+    const lastIndices = new Map<number, number>();
+    const ranges = q<HTMLElement>("#download-cherry-pick-values", this.cherryPickElement);
     const input = q<HTMLInputElement>("#download-cherry-pick-input", this.cherryPickElement);
-    const addCherryPick = (exclude: boolean, range?: string) => {
-      const rangeList = range ?
-        [CherryPickRange.from((exclude ? "!" : "") + range)].filter(r => r !== null) as CherryPickRange[] :
-        (input.value || "").split(",").map(s => (exclude ? "!" : "") + s).map(CherryPickRange.from).filter(r => r !== null) as CherryPickRange[];
-      if (rangeList.length > 0) {
-        rangeList.forEach(range => {
-          const newList = onAdd(chapterIndex, range);
-          if (newList === null) return;
-          addRangeElements(this.cherryPickElement.firstElementChild as HTMLElement, newList, (id) => onRemove(chapterIndex, id))
+    const ruleInput = q<HTMLInputElement>("#download-rule-input", this.cherryPickElement);
+    const preset = q<HTMLSelectElement>("#download-rule-preset", this.cherryPickElement);
+    const preview = q<HTMLElement>("#download-rule-preview", this.cherryPickElement);
+    const error = q<HTMLElement>("#download-rule-error", this.cherryPickElement);
+    const rangeBefore = q<HTMLElement>("#download-cherry-pick-btn-range-before", this.cherryPickElement);
+    const rangeAfter = q<HTMLElement>("#download-cherry-pick-btn-range-after", this.cherryPickElement);
+    const locked = () => downloading() || this.cherryPickElement.getAttribute("aria-busy") === "true";
+
+    const updatePreview = () => {
+      const { total, done } = totals.get(chapterIndex) ?? { total: 0, done: false };
+      let pick = getPick(chapterIndex);
+      let invalid = false;
+      if (draft) {
+        const candidate = new CherryPick();
+        if (!candidate.applyRule(ruleInput.value)) {
+          error.textContent = i18n.ruleInvalid.get();
+          ruleInput.setAttribute("aria-invalid", "true");
+          invalid = true;
+        } else {
+          pick = candidate;
+        }
+      }
+      if (!invalid) {
+        error.textContent = "";
+        ruleInput.removeAttribute("aria-invalid");
+      }
+      const result = pick.preview(total);
+      preview.textContent = (draft && !invalid ? i18n.ruleDraft.get() + ": " : "") +
+        i18n.rulePreview.get().replace("{count}", String(result.count)).replace("{total}", String(total)) +
+        (result.pages.length ? `: ${result.pages.join(", ")}${result.count > result.pages.length ? "…" : ""}` : "") +
+        (done ? "" : " · " + i18n.ruleLoading.get());
+    };
+    const syncRule = () => {
+      draft = false;
+      ruleInput.value = getPick(chapterIndex).rule?.toString() ?? "";
+      preset.value = Array.from(preset.options).some(option => option.value === ruleInput.value) ? ruleInput.value : "custom";
+      updatePreview();
+    };
+    const renderRanges = () => {
+      ranges.replaceChildren();
+      for (const range of getPick(chapterIndex).values) {
+        const tag = document.createElement("span");
+        tag.className = "ehvp-custom-panel-item-value";
+        tag.style.backgroundColor = range.positive ? "#7fef7b" : "#ffa975";
+        const label = document.createElement("span");
+        label.textContent = range.toString();
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "×";
+        remove.setAttribute("aria-label", `${range.toString()} ×`);
+        remove.disabled = locked();
+        remove.addEventListener("click", () => {
+          if (locked()) return;
+          getPick(chapterIndex).remove(range.id);
+          onChange(chapterIndex);
         });
+        tag.append(label, remove);
+        ranges.appendChild(tag);
       }
-      input.value = "";
-      input.focus();
-    }
-    const clearPick = () => {
-      onClear(chapterIndex);
-      addRangeElements(this.cherryPickElement.firstElementChild as HTMLElement, [], (id) => onRemove(chapterIndex, id))
-      input.value = "";
-      input.focus();
-    }
-    pickBTN.addEventListener("click", () => addCherryPick(false));
-    excludeBTN.addEventListener("click", () => addCherryPick(true));
-    clearBTN.addEventListener("click", clearPick);
-    this.cherryPickElement.querySelectorAll(".download-cherry-pick-follow-btn").forEach(btn => {
-      const followBTNClick = () => {
-        const step = parseInt(btn.getAttribute("data-sibling-step") || "1");
-        let sibling = btn;
-        for (let i = 0; i < step; i++) {
-          sibling = sibling.previousElementSibling as HTMLElement;
-        }
-        if (step <= 1) {
-          clearPick();
-        }
-        addCherryPick(step > 1, sibling.getAttribute("data-range") || undefined);
+    };
+    const addRange = (exclude: boolean, raw = input.value, replace = false) => {
+      if (locked()) return;
+      const parsed = raw.split(/[,，]/).map(value => CherryPickRange.from((exclude ? "!" : "") + value.trim()));
+      if (parsed.some(range => range === null)) {
+        error.textContent = i18n.rangeInvalid.get();
+        return;
       }
-      btn.addEventListener("click", followBTNClick);
+      if (replace) getPick(chapterIndex).reset();
+      parsed.forEach(range => getPick(chapterIndex).add(range!));
+      input.value = "";
+      draft = false;
+      onChange(chapterIndex);
+      input.focus();
+    };
+    const clear = () => {
+      if (locked()) return;
+      getPick(chapterIndex).reset();
+      input.value = "";
+      onChange(chapterIndex);
+    };
+    const applyRule = () => {
+      if (locked()) return;
+      if (!getPick(chapterIndex).applyRule(ruleInput.value)) {
+        error.textContent = i18n.ruleInvalid.get();
+        ruleInput.setAttribute("aria-invalid", "true");
+        return;
+      }
+      onChange(chapterIndex);
+    };
+    q("#download-rule-apply", this.cherryPickElement).addEventListener("click", applyRule);
+    ruleInput.addEventListener("input", () => {
+      draft = true;
+      preset.value = "custom";
+      updatePreview();
     });
-
-    input.addEventListener("keypress", (event) => event.key === "Enter" && addCherryPick(false));
-
-    let lastIndex: number = 0;
-    EBUS.subscribe("add-cherry-pick-range", (chIndex, index, positive, shiftKey) => {
-      const range = new CherryPickRange([index + 1, shiftKey ? (lastIndex ?? index) + 1 : index + 1], positive);
-      if (!shiftKey) lastIndex = index;
-      addRangeElements(this.cherryPickElement.firstElementChild as HTMLElement, onAdd(chIndex, range) || [], (id) => onRemove(chIndex, id));
+    preset.addEventListener("change", () => {
+      if (preset.value === "custom") { ruleInput.focus(); return; }
+      ruleInput.value = preset.value;
+      draft = true;
+      updatePreview();
     });
-    EBUS.subscribe("get-cherry-pick-last-index", () => lastIndex);
-    EBUS.subscribe("pf-change-chapter", (index) => {
-      if (index === -1) return;
+    q("#download-cherry-pick-btn-add", this.cherryPickElement).addEventListener("click", () => addRange(false));
+    q("#download-cherry-pick-btn-exclude", this.cherryPickElement).addEventListener("click", () => addRange(true));
+    q("#download-cherry-pick-btn-clear", this.cherryPickElement).addEventListener("click", clear);
+    for (const field of [ruleInput, input, preset]) {
+      field.addEventListener("keydown", event => {
+        event.stopPropagation();
+        if ((event as KeyboardEvent).key === "Enter" && field !== preset) {
+          event.preventDefault();
+          if (field === ruleInput) applyRule(); else addRange(false);
+        }
+      });
+      field.addEventListener("keypress", event => event.stopPropagation());
+      field.addEventListener("keyup", event => event.stopPropagation());
+    }
+    this.cherryPickElement.querySelectorAll<HTMLElement>(".download-cherry-pick-follow-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (locked()) return;
+        const exclude = btn.getAttribute("data-sibling-step") === "2";
+        const sibling = exclude ? btn.previousElementSibling!.previousElementSibling! : btn.previousElementSibling!;
+        addRange(exclude, sibling.getAttribute("data-range") || "", !exclude);
+      });
+    });
+    EBUS.subscribe("add-cherry-pick-range", (index, page, positive, shift) => {
+      if (locked() || index < 0) return;
+      const last = lastIndices.get(index) ?? page;
+      getPick(index).add(new CherryPickRange([page + 1, (shift ? last : page) + 1], positive));
+      if (!shift) lastIndices.set(index, page);
+      onChange(index);
+    });
+    EBUS.subscribe("get-cherry-pick-last-index", () => lastIndices.get(chapterIndex) ?? 0);
+    EBUS.subscribe("cherry-pick-changed", index => {
+      if (index !== chapterIndex) return;
+      renderRanges();
+      syncRule();
+    });
+    EBUS.subscribe("pf-change-chapter", (index, chapter) => {
+      if (index < 0) return;
       chapterIndex = index;
-      addRangeElements(this.cherryPickElement.firstElementChild as HTMLElement, getRangeList(chapterIndex) || [], (id) => onRemove(chapterIndex, id));
+      input.value = "";
+      totals.set(index, { total: chapter.filteredQueue.length, done: !!chapter.done });
+      renderRanges();
+      syncRule();
     });
-    let pad = 0;
-    EBUS.subscribe("pf-on-appended", (total) => {
-      pad = total.toString().length;
-      const rAfter = rangeAfterSpan.getAttribute("data-range")!.split("-").map(v => v.padStart(pad, "0")).join("-");
-      rangeAfterSpan.textContent = rAfter;
-      rangeAfterSpan.setAttribute("data-range", rAfter);
-      const rBefore = rangeBeforeSpan.getAttribute("data-range")!.split("-").map((v, i) => i === 1 ? total.toString() : v.padStart(pad, "0")).join("-")
-      rangeBeforeSpan.textContent = rBefore;
-      rangeBeforeSpan.setAttribute("data-range", rBefore);
-    })
-    EBUS.subscribe("ifq-do", (index) => {
-      const rAfter = [1, index + 1].map(v => v.toString().padStart(pad, "0")).join("-");
-      rangeAfterSpan.textContent = rAfter;
-      rangeAfterSpan.setAttribute("data-range", rAfter);
-      const rBefore = rangeBeforeSpan.getAttribute("data-range")!.split("-").map((v, i) => i === 0 ? (index + 1).toString().padStart(pad, "0") : v).join("-")
-      rangeBeforeSpan.textContent = rBefore;
-      rangeBeforeSpan.setAttribute("data-range", rBefore);
+    EBUS.subscribe("pf-on-appended", (total, _nodes, index, done) => {
+      totals.set(index, { total, done: !!done });
+      if (index !== chapterIndex) return;
+      const current = Math.min((lastIndices.get(index) ?? 0) + 1, total);
+      rangeBefore.textContent = `${current}-${total}`;
+      rangeBefore.setAttribute("data-range", rangeBefore.textContent);
+      updatePreview();
     });
+    EBUS.subscribe("ifq-do", index => {
+      const total = totals.get(chapterIndex)?.total ?? 0;
+      rangeAfter.textContent = `1-${index + 1}`;
+      rangeAfter.setAttribute("data-range", rangeAfter.textContent);
+      rangeBefore.textContent = `${index + 1}-${total}`;
+      rangeBefore.setAttribute("data-range", rangeBefore.textContent);
+    });
+    syncRule();
   }
 
 
@@ -297,12 +373,28 @@ export class DownloaderPanel {
         </div>
         <div id="download-cherry-pick" class="download-cherry-pick" hidden>
           <div class="ehvp-custom-panel-item-values" style="text-align: start;">
+            <div class="download-rule-controls">
+              <label for="download-rule-preset">${i18n.ruleSelection.get()}</label>
+              <select id="download-rule-preset">
+                <option value="">${i18n.ruleAll.get()}</option>
+                <option value="2n+1">${i18n.ruleOdd.get()}</option>
+                <option value="2n">${i18n.ruleEven.get()}</option>
+                <option value="3n+1">${i18n.ruleThird.get()}</option>
+                <option value="custom">${i18n.ruleCustom.get()}</option>
+              </select>
+              <input type="text" id="download-rule-input" placeholder="2n+1" aria-label="${i18n.ruleCustom.get()}" aria-describedby="download-rule-help download-rule-error" autocomplete="off" spellcheck="false" />
+              <button type="button" id="download-rule-apply" class="ehvp-custom-btn ehvp-custom-btn-green">${i18n.ruleApply.get()}</button>
+            </div>
+            <p id="download-rule-help" class="download-rule-help">${i18n.ruleHelp.get()}</p>
+            <div id="download-rule-preview" role="status" aria-live="polite"></div>
+            <div id="download-rule-error" role="alert"></div>
             <div style="margin-bottom: 1rem;display: flex;">
               <input type="text" class="ehvp-custom-panel-item-input" id="download-cherry-pick-input" placeholder="1, 2-3" style="text-align: start; width: 50%; height: 1.3rem; border-radius: 0px;" />
               <span class="ehvp-custom-btn ehvp-custom-btn-green" id="download-cherry-pick-btn-add">Pick</span>
               <span class="ehvp-custom-btn ehvp-custom-btn-plain" id="download-cherry-pick-btn-exclude">Exclude</span>
               <span class="ehvp-custom-btn ehvp-custom-btn-plain" id="download-cherry-pick-btn-clear">Clear</span>
             </div>
+            <div id="download-cherry-pick-values"></div>
             <div style="margin-bottom: 1rem;">
               <div style="margin-bottom: 0.2rem">
                 <span class="ehvp-custom-panel-item-span" id="download-cherry-pick-btn-range-after" data-range="1-1">1-1</span><span

@@ -939,6 +939,32 @@ export function styleCSS() {
 .download-chapters {
   overflow: hidden auto;
 }
+.download-cherry-pick {
+  overflow-y: auto;
+}
+.download-rule-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4em;
+  margin-top: 0.5em;
+}
+#download-rule-input {
+  width: 7em;
+  min-width: 0;
+}
+.download-rule-help, #download-rule-preview, #download-rule-error {
+  font-size: 0.8em;
+  margin: 0.5em 0;
+  overflow-wrap: anywhere;
+}
+#download-rule-error {
+  color: #ff9a80;
+}
+.download-cherry-pick[aria-busy="true"] .ehvp-custom-btn {
+  pointer-events: none;
+  opacity: 0.5;
+}
 .download-chapters label {
   white-space: nowrap;
 }
@@ -1073,6 +1099,11 @@ export function styleCSS() {
 .ehvp-context-menu-grid > .ehvp-context-menu-item:hover {
   background-color: #f6ffb4;
   color: #000;
+}
+.ehvp-context-menu-grid > button.ehvp-context-menu-item {
+  padding: 0;
+  border: 0;
+  font: inherit;
 }
 .ehvp-context-menu-grid > .ehvp-context-menu-item:active {
   background-color: #99ff9f;

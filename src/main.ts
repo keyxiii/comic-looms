@@ -44,7 +44,7 @@ function setup(): DestoryFunc {
 
   const events = initEvents(HTML, BIFM, FVGM, IFQ, IL, PH);
   addEventListeners(events, HTML, BIFM, DL, PH);
-  new ContextMenu(HTML, FVGM, events.appEvents, () => BIFM.mediaKind());
+  new ContextMenu(HTML, FVGM, events.appEvents, () => BIFM.mediaKind(), BIFM);
 
   EBUS.subscribe("downloader-canvas-on-click", (index) => {
     IFQ.currIndex = index;

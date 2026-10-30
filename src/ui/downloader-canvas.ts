@@ -61,6 +61,7 @@ export class DownloaderCanvas {
 
     // register animation event to parent for size change
     EBUS.subscribe("imf-download-state-change", () => this.drawDebouce());
+    EBUS.subscribe("cherry-pick-changed", () => this.drawDebouce());
     EBUS.subscribe("downloader-canvas-resize", () => this.resize());
   }
 

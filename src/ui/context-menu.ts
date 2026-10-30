@@ -5,6 +5,10 @@ import q from "../utils/query-element";
 import { AppEventDesc, AppEventIDInAnimation, AppEventIDInBigImgFrame, AppEventIDInFullViewGrid, AppEvents } from "./event";
 import { FullViewGridManager } from "./full-view-grid-manager";
 import { Elements } from "./html";
+import type { IMGFetcher } from "../img-fetcher";
+import type { BigImageFrameManager } from "./big-image-frame-manager";
+import { canDownloadSingleImage, downloadSingleImage } from "../download/single-image";
+import icons from "../utils/icons";
 
 type VisibleMode = "alway" | "onBig" | "onGrid" | "onMedia";
 
@@ -30,7 +34,8 @@ export class ContextMenu {
   isBigMode: () => boolean;
   pointerDownListener: (evt: MouseEvent) => void;
   mediaKind: () => MediaKind;
-  constructor(html: Elements, fvgm: FullViewGridManager, events: AppEvents, mediaKind: () => MediaKind) {
+  getImage: (event: MouseEvent) => IMGFetcher | undefined;
+  constructor(html: Elements, fvgm: FullViewGridManager, events: AppEvents, mediaKind: () => MediaKind, bifm?: BigImageFrameManager) {
     this.root = html.root;
     // this.events = events;
     html.root.addEventListener("contextmenu", (event) => {
@@ -56,6 +61,16 @@ export class ContextMenu {
       }
     };
     this.isBigMode = () => !html.bigImageFrame.classList.contains("big-img-frame-collapse");
+    this.getImage = event => {
+      const path = event.composedPath();
+      if (this.isBigMode()) {
+        const frame = path.find((element): element is HTMLElement => element instanceof HTMLElement && element.hasAttribute("d-index") && !!bifm?.container.contains(element));
+        const index = Number(frame?.getAttribute("d-index") ?? -1);
+        return Number.isInteger(index) && index >= 0 ? bifm?.getChapter(bifm.chapterIndex)?.filteredQueue[index] : undefined;
+      }
+      // Use the original DOM path, never the current page or a neighboring thumbnail.
+      return fvgm.queue?.find(item => path.includes(item.element))?.node;
+    };
     this.mediaKind = mediaKind;
     this.items = [];
     const inBigList: [AppEventIDInBigImgFrame, VisibleMode, boolean][] = [
@@ -106,7 +121,7 @@ export class ContextMenu {
     // console.log("event", event);
     this.close();
     const target = this.getTarget(event.clientX, event.clientY);
-    this.menu = this.create(new MouseEvent("contextmenu", { relatedTarget: target, clientX: event.clientX, clientY: event.clientY }));
+    this.menu = this.create(new MouseEvent("contextmenu", { relatedTarget: target, clientX: event.clientX, clientY: event.clientY }), this.getImage(event));
     this.root.appendChild(this.menu);
     const [w, h] = [this.menu.offsetWidth, this.menu.offsetHeight];
     let top = event.clientY - (h / 2);
@@ -122,10 +137,11 @@ export class ContextMenu {
 
   close() {
     this.menu?.remove();
+    this.menu = undefined;
     document.removeEventListener('pointerdown', this.pointerDownListener);
   }
 
-  private create(mev: MouseEvent): HTMLElement {
+  private create(mev: MouseEvent, image?: IMGFetcher): HTMLElement {
     const div = document.createElement("div");
     div.classList.add("ehvp-context-menu");
     // tooltip
@@ -159,12 +175,30 @@ export class ContextMenu {
       });
       elem.addEventListener("click", () => {
         item.desc.cb(mev);
-        if (item.closeAfter) div.remove();
+        if (item.closeAfter) this.close();
       });
       return elem;
     });
-    q(".ehvp-context-menu-grid", div).append(...items);
-    div.addEventListener("mouseleave", () => div.remove());
+    const grid = q(".ehvp-context-menu-grid", div);
+    if (image && canDownloadSingleImage(image)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ehvp-context-menu-item";
+      button.setAttribute("data-action", "download-image");
+      button.title = i18n.downloadThisImage.get();
+      button.setAttribute("aria-label", i18n.downloadThisImage.get());
+      button.innerHTML = icons.downloadIcon;
+      button.addEventListener("mouseover", () => tooltip.textContent = i18n.downloadThisImage.get());
+      button.addEventListener("focus", () => tooltip.textContent = i18n.downloadThisImage.get());
+      button.addEventListener("click", () => {
+        // Capture the fetcher at menu-open time, before any asynchronous work.
+        this.close();
+        downloadSingleImage(image).catch(error => EBUS.emit("notify-message", "error", `${i18n.singleImageFailed.get()} ${String(error)}`));
+      });
+      grid.appendChild(button);
+    }
+    grid.append(...items);
+    div.addEventListener("mouseleave", () => { if (this.menu === div) this.close(); });
     return div;
   }
 

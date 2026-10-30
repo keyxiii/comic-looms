@@ -14,6 +14,8 @@ import { DownloaderPanel } from "../ui/downloader-panel";
 import { i18n } from "../utils/i18n";
 import { ADAPTER } from "../platform/adapt";
 import { generateConvertScript } from "../utils/ffmpeg";
+import { CherryPick } from "./cherry-pick";
+import { sleep } from "../utils/sleep";
 
 const FILENAME_INVALIDCHAR = /[\\/:*?"<>|\n\t]/g;
 export class Downloader {
@@ -29,41 +31,16 @@ export class Downloader {
   panel: DownloaderPanel;
   canvas: DownloaderCanvas;
   cherryPicks: CherryPick[] = [new CherryPick()];
+  private downloadRun = 0;
 
   constructor(HTML: Elements, queue: IMGFetcherQueue, idleLoader: IdleLoader, pageFetcher: PageFetcher, matcher: Matcher<any>) {
     this.panel = HTML.downloader;
     this.panel.initTabs();
     this.initEvents(this.panel);
     this.panel.initCherryPick(
-      (chapterIndex, range) => {
-        if (this.cherryPicks[chapterIndex] === undefined) {
-          this.cherryPicks[chapterIndex] = new CherryPick();
-        }
-        const ret = this.cherryPicks[chapterIndex].add(range);
-        EBUS.emit("cherry-pick-changed", chapterIndex, this.cherryPicks[chapterIndex]);
-        return ret;
-      },
-      (chapterIndex, id) => {
-        if (this.cherryPicks[chapterIndex] === undefined) {
-          this.cherryPicks[chapterIndex] = new CherryPick();
-        }
-        const ret = this.cherryPicks[chapterIndex].remove(id);
-        EBUS.emit("cherry-pick-changed", chapterIndex, this.cherryPicks[chapterIndex]);
-        return ret;
-      },
-      (chapterIndex) => {
-        if (this.cherryPicks[chapterIndex] === undefined) {
-          this.cherryPicks[chapterIndex] = new CherryPick();
-        }
-        this.cherryPicks[chapterIndex].reset();
-        EBUS.emit("cherry-pick-changed", chapterIndex, this.cherryPicks[chapterIndex]);
-      },
-      (chapterIndex) => {
-        if (this.cherryPicks[chapterIndex] === undefined) {
-          this.cherryPicks[chapterIndex] = new CherryPick();
-        }
-        return this.cherryPicks[chapterIndex].values;
-      }
+      chapterIndex => this.getCherryPick(chapterIndex),
+      chapterIndex => EBUS.emit("cherry-pick-changed", chapterIndex, this.getCherryPick(chapterIndex)),
+      () => this.downloading
     );
     this.panel.initNotice([
       {
@@ -81,7 +58,7 @@ export class Downloader {
       }
     ]);
     this.queue = queue;
-    this.queue.cherryPick = () => this.cherryPicks[this.queue.chapterIndex] || new CherryPick();
+    this.queue.cherryPick = chapterIndex => this.getCherryPick(chapterIndex);
     this.idleLoader = idleLoader;
     this.idleLoader.cherryPick = () => this.cherryPicks[this.queue.chapterIndex] || new CherryPick();
     this.canvas = new DownloaderCanvas(this.panel.canvas, queue, () => this.cherryPicks[this.queue.chapterIndex] || new CherryPick());
@@ -93,17 +70,16 @@ export class Downloader {
 
     EBUS.subscribe("ifq-on-finished-report", (_, queue) => {
       if (queue.isFinished()) {
-        const sel = this.selectedChapters.find(sel => sel.index === queue.chapterIndex);
-        if (sel) {
-          sel.done = true;
-          sel.resolve(true);
-        }
         if (!this.downloading && !this.done) {
           this.panel.noticeableBTN();
         }
       }
     });
     EBUS.subscribe("imf-check-picked", (chapterIndex, index) => this.cherryPicks[chapterIndex]?.picked(index));
+  }
+
+  getCherryPick(chapterIndex: number): CherryPick {
+    return this.cherryPicks[chapterIndex] ??= new CherryPick();
   }
 
   initEvents(panel: DownloaderPanel) {
@@ -153,56 +129,83 @@ export class Downloader {
     this.selectedChapters.length = 0;
     const idSet = this.panel.selectedChapters();
     if (idSet.size === 0) {
-      this.selectedChapters.push({ index: this.pageFetcher.chapterIndex, done: false, ...promiseWithResolveAndReject() });
+      this.selectedChapters.push({ index: this.pageFetcher.chapterIndex, done: false });
     } else {
-      this.pageFetcher.chapters.forEach((c, i) => idSet.has(c.id) && this.selectedChapters.push({ index: i, done: false, ...promiseWithResolveAndReject() }));
+      this.pageFetcher.chapters.forEach((c, i) => idSet.has(c.id) && this.selectedChapters.push({ index: i, done: false }));
     }
     // evLog("debug", "get selected chapters: ", this.selectedChapters);
     return this.selectedChapters;
   }
 
   async start() {
-    // if (this.pageFetcher.chapters.length === 0) {
-    //   EBUS.emit("pf-init", () => this.start());
-    //   return;
-    // }
     if (this.downloading) return;
-    this.panel.flushUI("downloading");
+    const run = ++this.downloadRun;
+    const active = () => this.downloading && this.downloadRun === run;
+    this.done = false;
     this.downloading = true;
-    this.idleLoader.autoLoad = true;
+    this.idleLoader.abort();
+    this.panel.flushUI("downloading");
     this.checkSelectedChapters();
     try {
-      // when downloading, the page fetcher's changeChapter will only change the this.queue (IMGFetcherQueue)
       for (const sel of this.selectedChapters) {
-        if (!this.downloading) return;
-        // the queue has been reset, IMGFetcherQueue.restore(chapter.queue)
+        if (!active()) return;
         await this.pageFetcher.restoreChapter(sel.index);
-        // reset img fetcher stage to url, if it's failed
-        this.queue.forEach((imf) => (imf.stage === FetchState.FAILED) && imf.resetStage());
-        // already done
-        if (this.queue.isFinished()) {
-          sel.done = true;
-          sel.resolve(true);
-        } else { // not yet done
-          // find all of unloading imgFetcher and splice frist few imgFetchers
-          this.idleLoader.processingIndexList = this.queue.map((imgFetcher, index) => (!imgFetcher.lock && imgFetcher.stage === FetchState.URL ? index : -1))
-            .filter((index) => index >= 0)
-            .splice(0, ADAPTER.conf.downloadThreads);
-          this.idleLoader.onFailed(() => sel.reject("download failed or canceled"));
-          this.idleLoader.checkProcessingIndex();
-          this.idleLoader.start();
-        }
-        // wait all finished
-        await sel.promise;
+        if (!active()) return;
+        this.queue.forEach(imf => imf.stage === FetchState.FAILED && imf.resetStage());
+        await this.loadChapter(sel.index, active);
+        if (!active()) return;
+        sel.done = true;
       }
-      if (this.downloading) await this.download(this.selectedChapters.filter(sel => sel.done).map(sel => this.pageFetcher.chapters[sel.index]));
+      const chapters = this.selectedChapters.filter(sel => sel.done).map(sel => this.pageFetcher.chapters[sel.index]);
+      const hasSelection = this.selectedChapters.some(sel => this.pageFetcher.chapters[sel.index].filteredQueue.some((_, i) => this.getCherryPick(sel.index).picked(i)));
+      if (!hasSelection) throw new Error(i18n.ruleNoMatches.get());
+      if (active()) await this.download(chapters);
     } catch (error) {
-      if ("abort" === error) return;
+      if (!active()) return;
       this.abort("downloadFailed");
+      EBUS.emit("notify-message", "error", String(error));
       evLog("error", "download failed: ", error);
     } finally {
-      this.downloading = false;
-      // should clear this.selectedChapters ?
+      if (this.downloadRun === run) this.downloading = false;
+    }
+  }
+
+  /** Drain selected images with bounded workers, then discover the next list page.
+   * Empty matching batches still advance the iterator; only its end completes a chapter. */
+  async loadChapter(chapterIndex: number, active: () => boolean): Promise<void> {
+    const picked = this.getCherryPick(chapterIndex);
+    const chapter = this.pageFetcher.chapters[chapterIndex];
+    const threads = Math.max(1, Math.floor(ADAPTER.conf.downloadThreads));
+    let cursor = 0;
+    while (active()) {
+      let failed = false;
+      const worker = async () => {
+        while (active() && !failed) {
+          if (cursor >= this.queue.length) return;
+          const index = cursor++;
+          if (!picked.picked(index)) continue;
+          const imf = this.queue[index];
+          // A request started by the reader may still be in flight.
+          while (imf.lock && active() && !failed) await sleep(25);
+          if (!active() || failed) return;
+          if (imf.stage === FetchState.DONE) continue;
+          try {
+            await imf.start();
+            if ((imf.stage as FetchState) !== FetchState.DONE) throw new Error(imf.failedReason || `Image ${index + 1} failed`);
+          } catch (error) {
+            failed = true;
+            throw error;
+          }
+          if (active() && !failed && cursor < this.queue.length) await this.idleLoader.wait();
+        }
+      };
+      // Wait for every in-flight worker before reporting failure or switching chapters.
+      const results = await Promise.allSettled(Array.from({ length: threads }, worker));
+      const failure = results.find(result => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
+      if (!active() || chapter.done) return;
+      const appended = await this.pageFetcher.appendNextPage(undefined, true);
+      if (!appended && !chapter.done) throw new Error("Unable to load the next list page");
     }
   }
 
@@ -288,7 +291,8 @@ export class Downloader {
       const files: FileLike[] = [];
       for (let i = 0; i < chapters.length; i++) {
         const chapter = chapters[i];
-        const picked = this.cherryPicks[i] || new CherryPick();
+        const chapterIndex = this.pageFetcher.chapters.indexOf(chapter);
+        const picked = this.getCherryPick(chapterIndex);
         let directory = (() => {
           if (singleChapter) return "";
           if (chapter.title instanceof Array) {
@@ -341,9 +345,9 @@ export class Downloader {
 
   abort(stage: "downloadFailed" | "downloaded" | "downloadStart") {
     this.downloading = false;
+    this.downloadRun++;
     this.panel.abort(stage);
     this.idleLoader.abort();
-    this.selectedChapters.forEach(sel => sel.reject("abort"));
   }
 }
 
@@ -401,203 +405,9 @@ function uint8ArrayToReadableStream(arr: Uint8Array): ReadableStream<Uint8Array>
   });
 }
 
-function promiseWithResolveAndReject() {
-  let resolve: (value: boolean | PromiseLike<boolean>) => void;
-  let reject: (reason?: any) => void;
-  const promise = new Promise<boolean>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { resolve: resolve!, reject: reject!, promise };
-}
-
 export type ChapterStat = {
   index: number,
   done: boolean,
-  promise: Promise<boolean>,
-  reject: (reason?: any) => void
-  resolve: (value: boolean | PromiseLike<boolean>) => void
 };
 
-export class CherryPick {
-  values: CherryPickRange[] = [];
-  positive = false; // if values has positive picked, ignore exclude
-  sieve: boolean[] = [];
-
-  reset() {
-    this.values = [];
-    this.positive = false;
-    this.sieve = [];
-  }
-
-  add(range: CherryPickRange): CherryPickRange[] | null {
-    if (this.values.length === 0) {
-      this.positive = range.positive;
-      this.values.push(range);
-      this.setSieve(range);
-      return this.values;
-    }
-
-    const exists = this.values.find(v => v.id === range.id);
-    if (exists) return null;
-    const newR = range.range();
-    const remIdSet: Set<string> = new Set();
-    const addIdSet: Set<string> = new Set();
-    const addList: CherryPickRange[] = [];
-    let equalsOld = false;
-    for (let i = 0; i < this.values.length; i++) {
-      const old = this.values[i];
-      const oldR = old.range();
-      // new range overlaped by old range
-      if (newR[0] >= oldR[0] && newR[1] <= oldR[1]) {
-        if (range.positive !== this.positive) {
-          remIdSet.add(old.id);
-          if (oldR[0] < newR[0]) {
-            addList.push(new CherryPickRange([oldR[0], newR[0] - 1], old.positive));
-          }
-          if (oldR[1] > newR[1]) {
-            addList.push(new CherryPickRange([newR[1] + 1, oldR[1]], old.positive));
-          }
-          equalsOld = newR[0] === newR[1] && newR[0] === oldR[0] && newR[1] === oldR[1];
-        }
-        break;
-      }
-
-      if (newR[0] <= oldR[0] && newR[1] >= oldR[1]) {
-        // new range contains old range
-        remIdSet.add(old.id);
-      } else if (newR[0] <= oldR[0] && newR[1] >= oldR[0] && newR[1] <= oldR[1]) {
-        // new range right part intersects with old range
-        old.reset([newR[1] + 1, oldR[1]]);
-      } else if (newR[0] >= oldR[0] && newR[0] <= oldR[1] && newR[1] >= oldR[1]) {
-        // new range left part intersects with old range
-        old.reset([oldR[0], newR[0] - 1]);
-      }
-      if (range.positive === this.positive) {
-        if (!addIdSet.has(range.id)) {
-          addIdSet.add(range.id);
-          addList.push(range);
-        }
-      }
-    }
-
-    if (remIdSet.size > 0) {
-      this.values = this.values.filter(v => !remIdSet.has(v.id));
-    }
-    if (addList.length > 0) {
-      this.values.push(...addList);
-    }
-    if (this.values.length === 0) {
-      this.reset();
-      if (equalsOld) {
-        return this.values;
-      }
-      this.positive = range.positive;
-      this.values.push(range);
-    } else {
-      this.concat();
-    }
-    this.setSieve(range);
-    return this.values;
-  }
-
-  setSieve(range: CherryPickRange) {
-    const newR = range.range();
-    for (let i = newR[0] - 1; i < newR[1]; i++) {
-      this.sieve[i] = range.positive === this.positive;
-    }
-  }
-
-  concat() {
-    if (this.values.length < 2) return;
-    this.values.sort((v1, v2) => v1.range()[0] - v2.range()[0]);
-    let i = 0, j = 1;
-    const skip: number[] = [];
-    while (i < this.values.length && j < this.values.length) {
-      const r1 = this.values[i];
-      const r2 = this.values[j];
-      const r1v = r1.range();
-      const r2v = r2.range();
-      if (r1v[1] + 1 === r2v[0]) {
-        r1.reset([r1v[0], r2v[1]]);
-        skip.push(j);
-        j++;
-      } else {
-        do {
-          i++;
-        } while (skip.includes(i));
-        j = i + 1;
-      }
-    }
-    this.values = this.values.filter((_, i) => !skip.includes(i));
-  }
-
-  remove(id: string) {
-    const index = this.values.findIndex(v => v.id === id);
-    if (index === -1) return;
-    const range = this.values.splice(index, 1)[0];
-    const r = range.range();
-    for (let i = r[0] - 1; i < r[1]; i++) {
-      this.sieve[i] = false;
-    }
-    if (this.values.length === 0) {
-      this.sieve = [];
-      this.positive = false;
-    }
-  }
-
-  picked(index: number): boolean {
-    return Boolean(this.positive ? this.sieve[index] : !this.sieve[index]);
-  }
-
-}
-
-export class CherryPickRange {
-  value: number[];
-  positive: boolean;
-  id: string;
-  constructor(value: number[], positive: boolean) {
-    this.positive = positive;
-    this.value = value.sort((a, b) => a - b);
-    this.id = CherryPickRange.rangeToString(this.value, this.positive);
-  }
-
-  toString() {
-    return CherryPickRange.rangeToString(this.value, this.positive);
-  }
-
-  reset(newRange: number[]) {
-    this.value = newRange.sort((a, b) => a - b);
-    this.id = CherryPickRange.rangeToString(this.value, this.positive);
-  }
-
-  range(): number[] {
-    return this.value;
-  }
-
-  static rangeToString(value: number[], positive: boolean) {
-    let str = "";
-    if (value[0] === value[1]) {
-      str = value[0].toString();
-    } else {
-      str = value.map(v => v.toString()).join("-");
-    }
-    return positive ? str : "!" + str;
-  }
-
-  static from(value: string): CherryPickRange | null {
-    value = value?.trim();
-    if (!value) return null;
-    value = value.replace(/!+/, "!");
-    const exclude = value.startsWith("!");
-    if (/^!?\d+$/.test(value)) {
-      const index = parseInt(value.replace("!", ""));
-      return new CherryPickRange([index, index], !exclude);
-    }
-    if (/^!?\d+-\d+$/.test(value)) {
-      const splits = value.replace("!", "").split("-").map(v => parseInt(v));
-      return new CherryPickRange([splits[0], splits[1]], !exclude);
-    }
-    return null;
-  }
-}
+export { CherryPick, CherryPickRange } from "./cherry-pick";

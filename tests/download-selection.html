@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Download pattern regression</title>
+<style>
+  body { margin: 0; background: #202128; color: white; font-family: sans-serif; }
+  #test-controls { position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 3000; background: #202128; }
+  #test-result { overflow-wrap: anywhere; }
+</style>
+<div class="ehvp-root" id="test-root"><a id="downloader-panel-btn"></a></div>
+<div id="test-controls">
+  <button id="test-append">Append 20 pages</button>
+  <button id="test-switch">Switch chapter</button>
+  <output id="test-result"></output>
+</div>
+<script>
+  // Simulate the userscript manager without requesting any remote media.
+  window.GM = { xmlHttpRequest() { throw new Error('Unexpected network request'); } };
+  window.GM_getValue = () => undefined;
+  window.GM_setValue = () => {};
+</script>
+<script type="module">
+  import { DownloaderPanel } from '../src/ui/downloader-panel.ts';
+  import { CherryPick } from '../src/download/cherry-pick.ts';
+  import { Downloader } from '../src/download/downloader.ts';
+  import { FetchState } from '../src/img-fetcher.ts';
+  import EBUS from '../src/event-bus.ts';
+  import { styleCSS } from '../src/ui/style.ts';
+
+  const style = document.createElement('style');
+  style.textContent = styleCSS();
+  document.head.append(style);
+  const root = document.querySelector('#test-root');
+  root.insertAdjacentHTML('beforeend', DownloaderPanel.html());
+  const panel = new DownloaderPanel(root);
+  panel.panel.classList.remove('p-collapse');
+  panel.panel.style.top = '16px';
+  panel.panel.style.left = '12px';
+  panel.panel.style.maxWidth = 'calc(100vw - 24px)';
+  panel.initTabs();
+  panel.switchTab('cherry-pick');
+  const picks = [new CherryPick(), new CherryPick()];
+  const totals = [200, 24];
+  let current = 0;
+  let active = false;
+  let requested = [];
+  panel.initCherryPick(index => picks[index], index => EBUS.emit('cherry-pick-changed', index, picks[index]), () => active);
+  const append = () => EBUS.emit('pf-on-appended', totals[current], [], current, true);
+  append();
+  document.querySelector('#test-append').onclick = () => { totals[current] += 20; append(); };
+  document.querySelector('#test-switch').onclick = () => {
+    current = 1 - current;
+    EBUS.emit('pf-change-chapter', current, { filteredQueue: Array(totals[current]), done: true });
+    append();
+  };
+  panel.startBTN.addEventListener('click', async () => {
+    if (active) { active = false; return; }
+    active = true;
+    requested = [];
+    panel.flushUI('downloading');
+    const queue = Array.from({ length: totals[current] }, (_, index) => ({
+      stage: FetchState.URL, lock: false,
+      async start() { requested.push(index + 1); this.stage = FetchState.DONE; },
+    }));
+    const loader = Object.create(Downloader.prototype);
+    Object.assign(loader, { queue, cherryPicks: picks, idleLoader: { wait: async () => {} }, pageFetcher: { chapters: [{ done: true }, { done: true }] } });
+    await loader.loadChapter(current, () => active);
+    document.querySelector('#test-result').textContent = `Requested ${requested.length}: ${requested.slice(0, 12).join(', ')}${requested.length > 12 ? '…' : ''}`;
+    active = false;
+    panel.flushUI('downloadStart');
+  });
+  window.selectionTest = { picks, panel, get requested() { return requested; } };
+</script>
+</html>

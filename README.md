@@ -26,6 +26,8 @@ Preview ([click here if you can't see the image](./.assets/preview.md))
   > Click any thumbnail to start browsing from that point; includes multiple viewing modes: pagination mode and scroll mode.
 - #### 📥 Gallery Download
   > You can download the entire gallery, or only the images you have already viewed, or only the images you have selected.
+  > In Download → Cherry Pick, choose odd/even pages, one in three, or enter a pattern such as `2n+1`. Preview the selection, click Apply, then download. `n` starts at 0 and page numbers at 1; later list pages follow the same pattern. Rules apply to the current chapter and can be adjusted with manual picks/exclusions.
+  > Right-click a thumbnail or large image and choose **Download this image** to save that exact image directly, without a ZIP. GIF/WebP files keep their animation; Pixiv multi-frame Ugoira is not supported by this action.
   > Single-work Pixiv archives use the local download date and artwork ID: `YYMMDD_ID.zip` (for example, `261025_151236463.zip`). Collections containing multiple works keep their collection names.
 - #### 🪶 Low Load Pursuit
   > This script is heavily restrained with data requests; different behaviors determine how often data is requested from the site.

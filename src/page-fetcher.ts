@@ -57,6 +57,7 @@ export class PageFetcher {
   afterInit?: () => void;
   nodeActionDesc: { icon: string; description: string, fun: Function }[] = [];
   private appendPagePromise?: Promise<boolean>;
+  private appendPageError?: unknown;
   private abortb: boolean = false;
 
   constructor(queue: IMGFetcherQueue, matcher: Matcher<any>, filter: Filter) {
@@ -66,7 +67,7 @@ export class PageFetcher {
     this.filter.onChange = () => this.changeToChapter(this.chapterIndex);
     const debouncer = new Debouncer();
     // triggered when ifq finished
-    EBUS.subscribe("ifq-on-finished-report", (index) => debouncer.addEvent("APPEND-NEXT-PAGES", () => this.appendPages(index), 5));
+    EBUS.subscribe("ifq-on-finished-report", (index) => debouncer.addEvent("APPEND-NEXT-PAGES", () => !this.queue.downloading?.() && this.appendPages(index), 5));
     EBUS.subscribe("imf-on-finished", (index, success, imf) => {
       if (index === 0 && success) {
         this.chapters[imf.chapterIndex].thumbimg = imf.node.blobSrc;
@@ -190,13 +191,17 @@ export class PageFetcher {
   }
 
   changeToChapter(index: number) {
+    if (this.queue.downloading?.()) {
+      EBUS.emit("notify-message", "info", i18n.ruleChapterBusy.get());
+      return;
+    }
     this.chapterIndex = index;
-    EBUS.emit("pf-change-chapter", index, this.chapters[index]);
     const chapter = this.chapters[index];
 
     // Filter, It is an experimental feature
     chapter.filteredQueue = [...this.filter.filterNodes(chapter.queue, true)];
     chapter.filteredQueue.forEach((node, i) => node.index = i);
+    EBUS.emit("pf-change-chapter", index, chapter);
     if (chapter.filteredQueue.length > 0) {
       this.appendToView(chapter.filteredQueue.length, chapter.filteredQueue, index, this.chapters[index].done);
     }
@@ -211,6 +216,7 @@ export class PageFetcher {
    * Switch to the specified chapter, and restore the previously loaded elements or load new ones
    */
   async restoreChapter(index: number) {
+    if (this.appendPagePromise) await this.appendPagePromise;
     this.chapterIndex = index;
     const chapter = this.chapters[this.chapterIndex];
     this.queue.restore(index, chapter.filteredQueue);
@@ -219,8 +225,8 @@ export class PageFetcher {
       return;
     }
     if (chapter.queue.length === 0) {
-      await this.appendNextPage();
-      this.appendPages(this.queue.length);
+      await this.appendNextPage(undefined, !!this.queue.downloading?.());
+      if (!this.queue.downloading?.()) this.appendPages(this.queue.length);
     }
   }
 
@@ -229,6 +235,7 @@ export class PageFetcher {
    */
   private async appendPages(appendedCount: number) {
     while (true) {
+      if (this.queue.downloading?.()) break;
       if (appendedCount + 60 < this.queue.length && !ADAPTER.matcher?.preloadAllPages) break;
       if (!await this.appendNextPage()) break;
     }
@@ -249,15 +256,15 @@ export class PageFetcher {
     }
   }
 
-  async appendNextPage(force?: boolean): Promise<boolean> {
-    if (this.appendPagePromise) {
-      return this.appendPagePromise;
+  async appendNextPage(force?: boolean, strict = false): Promise<boolean> {
+    if (!this.appendPagePromise) {
+      this.appendPageError = undefined;
+      this.appendPagePromise = this.appendNextPageLocked(force)
+        .finally(() => { this.appendPagePromise = undefined; });
     }
-    this.appendPagePromise = this.appendNextPageLocked(force)
-      .finally(() => {
-        this.appendPagePromise = undefined;
-      });
-    return this.appendPagePromise;
+    const appended = await this.appendPagePromise;
+    if (strict && this.appendPageError !== undefined) throw this.appendPageError;
+    return appended;
   }
 
   private async appendNextPageLocked(force?: boolean): Promise<boolean> {
@@ -289,6 +296,7 @@ export class PageFetcher {
         return false;
       }
     } catch (error) {
+      this.appendPageError = error;
       evLog("error", "PageFetcher:appendNextPage error: ", error);
       this.onFailed?.(error);
       return false;
@@ -304,7 +312,7 @@ export class PageFetcher {
       const pageChapterID = chapterID ?? this.chapters[chapterIndex].id;
       const nodes = await this.obtainImageNodeList(pageSource, chapterIndex, pageChapterID);
       if (this.abortb) return false;
-      if (nodes.length === 0) return false;
+      if (nodes.length === 0) return true;
       const chapter = this.chapters[chapterIndex];
       const len = chapter.filteredQueue.length;
       const IFs = nodes.map(
@@ -335,6 +343,7 @@ export class PageFetcher {
       this.appendToView(this.queue.length, filteredIFs, chapterIndex);
       return true;
     } catch (error) {
+      this.appendPageError = error;
       evLog("error", `page fetcher append images error: `, error);
       this.onFailed?.(error)
       return false;

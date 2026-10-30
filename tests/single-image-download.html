@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Single image download regression</title>
+<style>
+  body { background: #202128; color: white; font-family: sans-serif; }
+  #controls { position: fixed; bottom: 16px; z-index: 4000; }
+  .test-images { display: flex; gap: 24px; padding: 40px; }
+  .test-images img { width: 160px; height: 120px; }
+</style>
+<div class="ehvp-root" id="test-root">
+  <div id="grid" class="test-images"></div>
+  <div id="big" class="big-img-frame-collapse"><div class="test-images bifm-container"></div></div>
+</div>
+<div id="controls"><button id="toggle-mode">Switch thumbnail / large image</button></div>
+<script>
+  window.GM = { xmlHttpRequest() { throw new Error('Unexpected network request'); } };
+  window.GM_getValue = () => undefined;
+  window.GM_setValue = () => {};
+</script>
+<script type="module">
+  import { ContextMenu } from '../src/ui/context-menu.ts';
+  import { FetchState } from '../src/img-fetcher.ts';
+  import { styleCSS } from '../src/ui/style.ts';
+  import icons from '../src/utils/icons.ts';
+
+  const style = document.createElement('style');
+  style.textContent = styleCSS();
+  document.head.append(style);
+  const root = document.querySelector('#test-root');
+  const grid = document.querySelector('#grid');
+  const big = document.querySelector('#big');
+  const container = big.firstElementChild;
+  const images = [];
+  for (const [index, color] of ['red', 'blue'].entries()) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 160; canvas.height = 120;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = color; ctx.fillRect(0, 0, 160, 120);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    const data = new Uint8Array(await blob.arrayBuffer());
+    const url = URL.createObjectURL(blob);
+    const thumbnail = document.createElement('div');
+    thumbnail.className = 'img-node';
+    thumbnail.dataset.index = String(index);
+    const img = document.createElement('img');
+    img.src = url; img.alt = `${color} thumbnail`;
+    thumbnail.append(img);
+    grid.append(thumbnail);
+    const frame = document.createElement('div');
+    frame.setAttribute('d-index', String(index));
+    const large = img.cloneNode();
+    large.alt = `${color} large image`;
+    frame.append(large); container.append(frame);
+    images.push({ index, stage: FetchState.DONE, lock: false, contentType: 'image/png', data,
+      node: { title: `${index ? 'second-blue' : 'first-red'}.png` },
+      start() { throw new Error('Cached data should be reused'); }, element: thumbnail,
+    });
+  }
+  const fvgm = { queue: images.map(node => ({ node, element: node.element })), mouseOn(x, y) {
+    return this.queue.find(({ element }) => {
+      const rect = element.getBoundingClientRect();
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    })?.element;
+  } };
+  const events = new Proxy({}, { get: () => new Proxy({}, { get: () => ({ icon: icons.imageIcon, cb() {} }) }) });
+  const bifm = { container, currentIndex: 0, chapterIndex: 0, getChapter: () => ({ filteredQueue: images }) };
+  const menu = new ContextMenu({ root, bigImageFrame: big }, fvgm, events, () => undefined, bifm);
+  document.querySelector('#toggle-mode').onclick = () => {
+    menu.close();
+    const collapsed = big.classList.toggle('big-img-frame-collapse');
+    grid.hidden = !collapsed;
+    big.style.display = collapsed ? 'none' : 'block';
+  };
+  big.style.display = 'none';
+</script>
+</html>
