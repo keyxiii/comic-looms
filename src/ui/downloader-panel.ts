@@ -319,7 +319,8 @@ export class DownloaderPanel {
     });
     EBUS.subscribe("add-cherry-pick-range", (index, page, positive, shift) => {
       if (locked() || index < 0) return;
-      const last = lastIndices.get(index) ?? page;
+      // Match the menu's default anchor: the first image until a single pick sets it.
+      const last = lastIndices.get(index) ?? 0;
       getPick(index).add(new CherryPickRange([page + 1, (shift ? last : page) + 1], positive));
       if (!shift) lastIndices.set(index, page);
       onChange(index);

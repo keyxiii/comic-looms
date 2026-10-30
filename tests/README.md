@@ -22,6 +22,12 @@ The pre-existing `tests/media-logic.test.mjs` still imports the absent
 `src/ui/media-actions.ts`; this prevents that file from running in the full suite.
 Live site/userscript-manager compatibility remains a manual check.
 
+Context-menu range selection: `node --import ./tests/register.mjs --test tests/context-menu-selection.test.mjs`.
+The tests right-click thumbnails and click the production menu actions. The first
+range action on page 26 must select pages 1–26, matching its tooltip. Range actions
+keep the anchor until a single-image pick/exclusion changes it. Tests also cover
+repeated picks, reverse ranges, exclusions, per-chapter anchors and download locks.
+
 ## Media regression
 
 Single-image context-menu tests: `node --import ./tests/register.mjs --test tests/single-image-download.test.mjs`.
